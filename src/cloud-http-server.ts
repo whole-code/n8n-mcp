@@ -122,8 +122,8 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
-  if (pathname !== '/mcp') {
-    sendJson(res, 404, { error: 'Not found. MCP endpoint is at /mcp' });
+  if (pathname !== '/mcp' && pathname !== '/') {
+    sendJson(res, 404, { error: 'Not found. MCP endpoint is at / or /mcp' });
     return;
   }
 
