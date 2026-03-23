@@ -1,0 +1,40 @@
+# Cloud deployment Dockerfile for n8n-MCP
+# Runs the cloud-http-server which accepts credentials via URL/headers
+
+# Stage 1: Build
+FROM node:22-alpine AS builder
+WORKDIR /app
+
+COPY tsconfig*.json ./
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY src ./src
+RUN npx tsc -p tsconfig.build.json
+
+# Stage 2: Runtime
+FROM node:22-alpine AS runtime
+WORKDIR /app
+
+RUN apk add --no-cache curl python3 make g++ && \
+    rm -rf /var/cache/apk/*
+
+COPY package.json package-lock.json ./
+RUN npm ci --production --no-audit --no-fund && \
+    apk del python3 make g++
+
+COPY --from=builder /app/dist ./dist
+COPY data/nodes.db ./data/
+COPY src/database/schema-optimized.sql ./src/database/
+
+RUN addgroup -S nodejs && adduser -S nodejs -G nodejs && \
+    chown -R nodejs:nodejs /app
+USER nodejs
+
+ENV IS_DOCKER=true
+EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD curl -f http://127.0.0.1:${PORT:-3000}/health || exit 1
+
+CMD ["node", "dist/cloud-http-server.js"]

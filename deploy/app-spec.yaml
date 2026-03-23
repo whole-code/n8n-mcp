@@ -1,0 +1,25 @@
+name: n8n-mcp-server
+region: nyc
+services:
+  - name: n8n-mcp
+    dockerfile_path: Dockerfile.cloud
+    github:
+      repo: whole-code/n8n-mcp
+      branch: main
+      deploy_on_push: true
+    http_port: 3000
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    health_check:
+      http_path: /health
+    routes:
+      - path: /
+    envs:
+      - key: PORT
+        value: "3000"
+      # Optional: set default n8n credentials (can also be passed per-request)
+      # - key: N8N_API_URL
+      #   value: https://your-n8n-instance.com/api/v1
+      # - key: N8N_API_KEY
+      #   value: your-api-key
+      #   type: SECRET

@@ -26,6 +26,7 @@
     "start:http": "MCP_MODE=http node dist/mcp/index.js",
     "start:http:fixed:deprecated": "echo 'DEPRECATED: USE_FIXED_HTTP is deprecated. Use npm run start:http instead.' && MCP_MODE=http USE_FIXED_HTTP=true node dist/mcp/index.js",
     "start:n8n": "N8N_MODE=true MCP_MODE=http node dist/mcp/index.js",
+    "start:cloud": "node dist/cloud-http-server.js",
     "http": "npm run build && npm run start:http",
     "dev": "npm run build && npm run rebuild && npm run validate",
     "dev:http": "MCP_MODE=http nodemon --watch src --ext ts --exec 'npm run build && npm run start:http'",
