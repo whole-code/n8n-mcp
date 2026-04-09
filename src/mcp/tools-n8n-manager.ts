@@ -768,3 +768,13 @@ Old backups are also pruned automatically (10 most recent per workflow, plus an 
     },
   },
 ];
+
+/**
+ * Maps tool names to the argument key that carries the operation/mode selector.
+ * Only tools listed here are eligible for DISABLED_TOOL_OPERATIONS filtering.
+ * Add an entry here when introducing a new tool that bundles multiple operations.
+ */
+export const TOOL_OPERATION_PARAM: Record<string, string> = {
+  'n8n_executions': 'action',
+  'n8n_workflow_versions': 'mode',
+};

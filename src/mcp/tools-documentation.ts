@@ -1,6 +1,10 @@
 import { toolsDocumentation } from './tool-docs';
 
-export function getToolDocumentation(toolName: string, depth: 'essentials' | 'full' = 'essentials'): string {
+export function getToolDocumentation(
+  toolName: string,
+  depth: 'essentials' | 'full' = 'essentials',
+  disabledOperations?: Set<string>
+): string {
   // Check for special documentation topics
   if (toolName === 'javascript_code_node_guide') {
     return getJavaScriptCodeNodeGuide(depth);
@@ -14,10 +18,14 @@ export function getToolDocumentation(toolName: string, depth: 'essentials' | 'fu
     return `Tool '${toolName}' not found. Use tools_documentation() to see available tools.`;
   }
 
+  const disabledNotice = disabledOperations && disabledOperations.size > 0
+    ? `\n> **Server policy**: The following operations are disabled in this deployment: ${[...disabledOperations].join(', ')}\n`
+    : '';
+
   if (depth === 'essentials') {
     const { essentials } = tool;
     return `# ${tool.name}
-
+${disabledNotice}
 ${essentials.description}
 
 **Example**: ${essentials.example}
@@ -35,7 +43,7 @@ For full documentation, use: tools_documentation({topic: "${toolName}", depth: "
   // Full documentation
   const { full } = tool;
   return `# ${tool.name}
-
+${disabledNotice}
 ${full.description}
 
 ## Parameters
@@ -65,7 +73,17 @@ ${full.pitfalls.map(p => `- ${p}`).join('\n')}
 ${full.relatedTools.map(t => `- ${t}`).join('\n')}`;
 }
 
-export function getToolsOverview(depth: 'essentials' | 'full' = 'essentials'): string {
+function buildDisabledOpsOverviewSection(disabledToolOps?: Map<string, Set<string>>): string {
+  if (!disabledToolOps || disabledToolOps.size === 0) return '';
+  const lines = [...disabledToolOps.entries()]
+    .map(([tool, ops]) => `- **${tool}**: ${[...ops].join(', ')}`);
+  return `\n\n## Server Policy: Disabled Operations\nThe following operations are disabled in this deployment and will be rejected if called:\n${lines.join('\n')}`;
+}
+
+export function getToolsOverview(
+  depth: 'essentials' | 'full' = 'essentials',
+  disabledToolOps?: Map<string, Set<string>>
+): string {
   // Get version info from package.json. We track n8n-nodes-base directly
   // instead of the n8n meta package, so use that as the compatibility hint.
   const packageJson = require('../../package.json');
@@ -152,7 +170,7 @@ When working with Code nodes, always start by calling the relevant guide:
 - Network-dependent: All n8n_* tools
 
 For comprehensive documentation on any tool:
-tools_documentation({topic: "tool_name", depth: "full"})`;
+tools_documentation({topic: "tool_name", depth: "full"})${buildDisabledOpsOverviewSection(disabledToolOps)}`;
   }
 
   const categories = getAllCategories();
@@ -186,7 +204,7 @@ ${tools.map(toolName => {
 - n8n API tools only available when N8N_API_URL and N8N_API_KEY are configured
 
 For detailed documentation on any tool:
-tools_documentation({topic: "tool_name", depth: "full"})`;
+tools_documentation({topic: "tool_name", depth: "full"})${buildDisabledOpsOverviewSection(disabledToolOps)}`;
 }
 
 export function searchToolDocumentation(keyword: string): string[] {
