@@ -1665,7 +1665,8 @@ export class WorkflowDiffEngine {
       if (!Object.prototype.hasOwnProperty.call(current, key)
           || typeof current[key] !== 'object'
           || current[key] === null) {
-        if (value === null) return; // parent path doesn't exist, nothing to delete
+        // null or undefined signals deletion — if parent path doesn't exist there's nothing to delete
+        if (value === null || value === undefined) return;
         current[key] = {};
       }
       current = current[key];
@@ -1676,7 +1677,11 @@ export class WorkflowDiffEngine {
     if (DANGEROUS_PATH_KEYS.has(finalKey)) {
       throw new Error(`Invalid property path: "${path}" contains a forbidden key`);
     }
-    if (value === null) {
+    // Both null and undefined remove the property. undefined is accepted because
+    // workflow-auto-fixer.ts already uses `{prop: undefined}` to signal removal
+    // (see processErrorOutputFixes), so treating only null as the deletion marker
+    // left those fixes silently inert at the diff-engine layer.
+    if (value === null || value === undefined) {
       delete current[finalKey];
     } else {
       current[finalKey] = value;

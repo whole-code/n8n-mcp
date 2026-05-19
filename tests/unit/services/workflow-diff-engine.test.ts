@@ -6158,6 +6158,127 @@ describe('WorkflowDiffEngine', () => {
     });
   });
 
+  describe('undefined value property deletion (Issue #292)', () => {
+    // Mirrors the `null value property deletion` block. `undefined` is accepted
+    // as a deletion marker because workflow-auto-fixer.ts already uses
+    // `{prop: undefined}` to remove properties (see processErrorOutputFixes) —
+    // before this, those fixes set the property to `undefined` instead of
+    // deleting it, which left `hasOwnProperty(prop)` true and could trip
+    // validators that check property presence rather than value.
+
+    it('should delete a property when value is undefined', async () => {
+      const node = baseWorkflow.nodes.find((n: any) => n.name === 'HTTP Request')!;
+      (node as any).continueOnFail = true;
+
+      const operation: UpdateNodeOperation = {
+        type: 'updateNode',
+        nodeName: 'HTTP Request',
+        updates: { continueOnFail: undefined }
+      };
+
+      const request: WorkflowDiffRequest = {
+        id: 'test-workflow',
+        operations: [operation]
+      };
+
+      const result = await diffEngine.applyDiff(baseWorkflow, request);
+
+      expect(result.success).toBe(true);
+      const updatedNode = result.workflow.nodes.find((n: any) => n.name === 'HTTP Request')!;
+      expect('continueOnFail' in updatedNode).toBe(false);
+    });
+
+    it('should delete a nested property when value is undefined', async () => {
+      const node = baseWorkflow.nodes.find((n: any) => n.name === 'HTTP Request')!;
+      (node as any).parameters = { url: 'https://example.com', authentication: 'basic' };
+
+      const operation: UpdateNodeOperation = {
+        type: 'updateNode',
+        nodeName: 'HTTP Request',
+        updates: { 'parameters.authentication': undefined }
+      };
+
+      const request: WorkflowDiffRequest = {
+        id: 'test-workflow',
+        operations: [operation]
+      };
+
+      const result = await diffEngine.applyDiff(baseWorkflow, request);
+
+      expect(result.success).toBe(true);
+      const updatedNode = result.workflow.nodes.find((n: any) => n.name === 'HTTP Request')!;
+      expect((updatedNode as any).parameters.url).toBe('https://example.com');
+      expect('authentication' in (updatedNode as any).parameters).toBe(false);
+    });
+
+    it('should be a no-op when deleting a non-existent property with undefined', async () => {
+      const operation: UpdateNodeOperation = {
+        type: 'updateNode',
+        nodeName: 'HTTP Request',
+        updates: { nonExistentProp: undefined }
+      };
+
+      const request: WorkflowDiffRequest = {
+        id: 'test-workflow',
+        operations: [operation]
+      };
+
+      const result = await diffEngine.applyDiff(baseWorkflow, request);
+
+      expect(result.success).toBe(true);
+      const updatedNode = result.workflow.nodes.find((n: any) => n.name === 'HTTP Request')!;
+      expect('nonExistentProp' in updatedNode).toBe(false);
+    });
+
+    it('should skip intermediate object creation when deleting from non-existent parent path with undefined', async () => {
+      const operation: UpdateNodeOperation = {
+        type: 'updateNode',
+        nodeName: 'HTTP Request',
+        updates: { 'nonExistent.deeply.nested.prop': undefined }
+      };
+
+      const request: WorkflowDiffRequest = {
+        id: 'test-workflow',
+        operations: [operation]
+      };
+
+      const result = await diffEngine.applyDiff(baseWorkflow, request);
+
+      expect(result.success).toBe(true);
+      const updatedNode = result.workflow.nodes.find((n: any) => n.name === 'HTTP Request')!;
+      expect('nonExistent' in updatedNode).toBe(false);
+    });
+
+    it('should support continueOnFail → onError migration with undefined', async () => {
+      // Real-world case from Issue #292: replacing the deprecated continueOnFail
+      // with the modern onError property. Setting continueOnFail to undefined
+      // must remove it so the mutual-exclusivity validator does not trip.
+      const node = baseWorkflow.nodes.find((n: any) => n.name === 'HTTP Request')!;
+      (node as any).continueOnFail = true;
+
+      const operation: UpdateNodeOperation = {
+        type: 'updateNode',
+        nodeName: 'HTTP Request',
+        updates: {
+          continueOnFail: undefined,
+          onError: 'continueRegularOutput'
+        }
+      };
+
+      const request: WorkflowDiffRequest = {
+        id: 'test-workflow',
+        operations: [operation]
+      };
+
+      const result = await diffEngine.applyDiff(baseWorkflow, request);
+
+      expect(result.success).toBe(true);
+      const updatedNode = result.workflow.nodes.find((n: any) => n.name === 'HTTP Request')!;
+      expect('continueOnFail' in updatedNode).toBe(false);
+      expect((updatedNode as any).onError).toBe('continueRegularOutput');
+    });
+  });
+
   describe('transferWorkflow operation', () => {
     it('should set transferToProjectId in result for valid transferWorkflow', async () => {
       const operation: TransferWorkflowOperation = {

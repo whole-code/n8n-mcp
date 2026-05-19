@@ -201,7 +201,7 @@ Please choose a different name.
 
 ## Removing Properties with null
 
-To remove a property from a node, set its value to \`null\` in the updates object. This is essential when migrating from deprecated properties or cleaning up optional configuration fields.
+To remove a property from a node, set its value to \`null\` in the updates object. This is essential when migrating from deprecated properties or cleaning up optional configuration fields. \`undefined\` is also accepted and behaves identically — both delete the property from the node.
 
 ### Why Use null?
 - **Property removal**: Setting a property to \`null\` removes it completely from the node object
