@@ -58,7 +58,7 @@ Add to Claude Desktop config:
 > **Note**: npx will download and run the latest version automatically. The package includes a pre-built database with all n8n node information.
 
 > **Running multiple MCP clients at once (e.g. Claude Desktop + Claude Code)?**
-> Launching n8n-mcp via `npx` from two clients simultaneously can hit npm cache lock conflicts. Give each client its own npm cache directory by adding `npm_config_cache` to its `env`:
+> Launching n8n-mcp via `npx` from two clients simultaneously can hit npm cache lock conflicts. Give **each client a different** `npm_config_cache` directory (the path must be unique per client — don't reuse one path) in its `env`:
 > ```json
 > {
 >   "mcpServers": {
@@ -68,7 +68,8 @@ Add to Claude Desktop config:
 >       "env": {
 >         "npm_config_cache": "/path/to/a/separate/cache",
 >         "MCP_MODE": "stdio",
->         "LOG_LEVEL": "error"
+>         "LOG_LEVEL": "error",
+>         "DISABLE_CONSOLE_OUTPUT": "true"
 >       }
 >     }
 >   }
