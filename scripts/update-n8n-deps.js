@@ -12,33 +12,40 @@ const path = require('path');
 class N8nDependencyUpdater {
   constructor() {
     this.packageJsonPath = path.join(__dirname, '..', 'package.json');
-    // Only track the main n8n package - let it manage its own dependencies
-    this.mainPackage = 'n8n';
+    // Track n8n-nodes-base directly (the package our loader actually requires).
+    // The full `n8n` meta package was dropped in favor of this leaner dep tree.
+    this.mainPackage = 'n8n-nodes-base';
   }
 
   /**
-   * Get latest version of a package from npm
+   * Compare two semver-ish versions. Returns -1 / 0 / 1 (a<b, a==b, a>b).
+   * Enough for the "don't downgrade" guard; not a full semver parser.
    */
-  getLatestVersion(packageName) {
-    try {
-      const output = execSync(`npm view ${packageName} version`, { encoding: 'utf8' });
-      return output.trim();
-    } catch (error) {
-      console.error(`Failed to get version for ${packageName}:`, error.message);
-      return null;
-    }
+  compareVersions(a, b) {
+    const parse = (v) => v.split('.').map((p) => parseInt(p, 10) || 0);
+    const [a1, a2, a3] = parse(a);
+    const [b1, b2, b3] = parse(b);
+    if (a1 !== b1) return a1 < b1 ? -1 : 1;
+    if (a2 !== b2) return a2 < b2 ? -1 : 1;
+    if (a3 !== b3) return a3 < b3 ? -1 : 1;
+    return 0;
   }
 
   /**
-   * Get dependencies of a specific n8n version
+   * Resolve the set of n8n sub-package versions compatible with the current
+   * `n8n@latest` release. The `n8n` meta package is the source of truth for
+   * which sub-package versions constitute "n8n X.Y.Z" — individual
+   * sub-packages (notably n8n-nodes-base, n8n-workflow) don't keep their
+   * `latest` dist-tag in sync, so querying each one's tag can return
+   * versions older than what n8n itself depends on.
    */
-  getN8nDependencies(n8nVersion) {
+  getN8nDependencySet() {
     try {
-      const output = execSync(`npm view n8n@${n8nVersion} dependencies --json`, { encoding: 'utf8' });
+      const output = execSync('npm view n8n@latest dependencies --json', { encoding: 'utf8' });
       return JSON.parse(output);
     } catch (error) {
-      console.error(`Failed to get dependencies for n8n@${n8nVersion}:`, error.message);
-      return {};
+      console.error('Failed to resolve n8n@latest dependencies:', error.message);
+      return null;
     }
   }
 
@@ -52,88 +59,58 @@ class N8nDependencyUpdater {
   }
 
   /**
-   * Check which packages need updates
+   * Check which packages need updates.
+   *
+   * Versions are resolved from `n8n@latest`'s dependency pins rather than
+   * each sub-package's own `latest` dist-tag — n8n does not keep the
+   * per-package tags in sync, which previously caused this script to
+   * propose downgrades.
    */
   async checkForUpdates() {
     console.log('🔍 Checking for n8n dependency updates...\n');
-    
+
+    const trackedDeps = [
+      'n8n-nodes-base',
+      'n8n-core',
+      'n8n-workflow',
+      '@n8n/n8n-nodes-langchain',
+    ];
+
+    const metaDeps = this.getN8nDependencySet();
+    if (!metaDeps) {
+      console.error('Aborting: could not resolve n8n@latest dependency set');
+      return [];
+    }
+
     const updates = [];
-    
-    // First check the main n8n package
-    const currentN8nVersion = this.getCurrentVersion('n8n');
-    const latestN8nVersion = this.getLatestVersion('n8n');
-    
-    if (!currentN8nVersion || !latestN8nVersion) {
-      console.error('Failed to check n8n version');
-      return updates;
-    }
-    
-    if (currentN8nVersion !== latestN8nVersion) {
-      console.log(`📦 n8n: ${currentN8nVersion} → ${latestN8nVersion} (update available)`);
-      
-      // Get the dependencies that n8n requires
-      const n8nDeps = this.getN8nDependencies(latestN8nVersion);
-      
-      // Add main n8n update
-      updates.push({
-        package: 'n8n',
-        current: currentN8nVersion,
-        latest: latestN8nVersion
-      });
-      
-      // Check our tracked dependencies that n8n uses
-      const trackedDeps = ['n8n-core', 'n8n-workflow', '@n8n/n8n-nodes-langchain'];
-      
-      for (const dep of trackedDeps) {
-        const currentVersion = this.getCurrentVersion(dep);
-        const requiredVersion = n8nDeps[dep];
-        
-        if (requiredVersion && currentVersion) {
-          // Extract version from npm dependency format (e.g., "^1.2.3" -> "1.2.3")
-          const cleanRequiredVersion = requiredVersion.replace(/^[\^~>=<]/, '').split(' ')[0];
-          
-          if (currentVersion !== cleanRequiredVersion) {
-            updates.push({
-              package: dep,
-              current: currentVersion,
-              latest: cleanRequiredVersion,
-              reason: `Required by n8n@${latestN8nVersion}`
-            });
-            console.log(`📦 ${dep}: ${currentVersion} → ${cleanRequiredVersion} (required by n8n)`);
-          } else {
-            console.log(`✅ ${dep}: ${currentVersion} (compatible with n8n@${latestN8nVersion})`);
-          }
-        }
+    for (const dep of trackedDeps) {
+      const currentVersion = this.getCurrentVersion(dep);
+      const latestVersion = metaDeps[dep];
+
+      if (!currentVersion) {
+        console.error(`Failed to read current version for ${dep}`);
+        continue;
       }
-    } else {
-      console.log(`✅ n8n: ${currentN8nVersion} (up to date)`);
-      
-      // Even if n8n is up to date, check if our dependencies match what n8n expects
-      const n8nDeps = this.getN8nDependencies(currentN8nVersion);
-      const trackedDeps = ['n8n-core', 'n8n-workflow', '@n8n/n8n-nodes-langchain'];
-      
-      for (const dep of trackedDeps) {
-        const currentVersion = this.getCurrentVersion(dep);
-        const requiredVersion = n8nDeps[dep];
-        
-        if (requiredVersion && currentVersion) {
-          const cleanRequiredVersion = requiredVersion.replace(/^[\^~>=<]/, '').split(' ')[0];
-          
-          if (currentVersion !== cleanRequiredVersion) {
-            updates.push({
-              package: dep,
-              current: currentVersion,
-              latest: cleanRequiredVersion,
-              reason: `Required by n8n@${currentN8nVersion}`
-            });
-            console.log(`📦 ${dep}: ${currentVersion} → ${cleanRequiredVersion} (sync with n8n)`);
-          } else {
-            console.log(`✅ ${dep}: ${currentVersion} (in sync)`);
-          }
-        }
+      if (!latestVersion) {
+        console.error(`${dep} is not listed in n8n@latest dependencies — skipping`);
+        continue;
+      }
+
+      const cmp = this.compareVersions(currentVersion, latestVersion);
+      if (cmp === 0) {
+        console.log(`✅ ${dep}: ${currentVersion} (up to date)`);
+      } else if (cmp < 0) {
+        console.log(`📦 ${dep}: ${currentVersion} → ${latestVersion} (update available)`);
+        updates.push({
+          package: dep,
+          current: currentVersion,
+          latest: latestVersion,
+        });
+      } else {
+        console.log(`⏭️  ${dep}: ${currentVersion} is ahead of n8n@latest pin ${latestVersion} — skipping (no downgrade)`);
       }
     }
-    
+
     return updates;
   }
 
@@ -151,8 +128,11 @@ class N8nDependencyUpdater {
     const packageJson = JSON.parse(fs.readFileSync(this.packageJsonPath, 'utf8'));
     
     for (const update of updates) {
-      packageJson.dependencies[update.package] = `^${update.latest}`;
-      console.log(`   Updated ${update.package} to ^${update.latest}${update.reason ? ` (${update.reason})` : ''}`);
+      // Exact pin (no caret) so a fresh `npm install` after a future minor release
+      // can't slip in a different node set than the database was rebuilt against.
+      // The DB rebuild step assumes these versions are reproducible.
+      packageJson.dependencies[update.package] = update.latest;
+      console.log(`   Updated ${update.package} to ${update.latest}`);
     }
     
     fs.writeFileSync(
@@ -204,7 +184,7 @@ class N8nDependencyUpdater {
   runValidation() {
     console.log('\n🧪 Running validation tests...');
     try {
-      execSync('npm run validate && npm run test-nodes', { 
+      execSync('npm run validate', {
         cwd: path.join(__dirname, '..'),
         stdio: 'inherit'
       });

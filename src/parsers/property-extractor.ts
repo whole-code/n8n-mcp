@@ -131,18 +131,23 @@ export class PropertyExtractor {
       }
     }
     
-    // Programmatic nodes - look for operation property in properties
+    // Programmatic nodes - look for operation properties in properties
+    // Note: nodes can have MULTIPLE operation properties, each with displayOptions.show.resource
+    // mapping to a different resource (e.g., Slack has 7 operation props for channel, message, etc.)
     if (description.properties && Array.isArray(description.properties)) {
-      const operationProp = description.properties.find(
+      const operationProps = description.properties.filter(
         (p: any) => p.name === 'operation' || p.name === 'action'
       );
-      
-      if (operationProp?.options) {
+
+      for (const operationProp of operationProps) {
+        if (!operationProp?.options) continue;
+        const resource = operationProp.displayOptions?.show?.resource?.[0];
         operationProp.options.forEach((op: any) => {
           operations.push({
             operation: op.value,
             name: op.name,
-            description: op.description
+            description: op.description,
+            ...(resource ? { resource } : {})
           });
         });
       }

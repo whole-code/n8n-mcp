@@ -10,6 +10,7 @@ import { DocsMapper } from '../mappers/docs-mapper';
 import { NodeRepository } from '../database/node-repository';
 import { ToolVariantGenerator } from '../services/tool-variant-generator';
 import { TemplateSanitizer } from '../utils/template-sanitizer';
+import { assertCoreNodesPresent } from './core-node-check';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -28,9 +29,13 @@ async function rebuild() {
   const schema = fs.readFileSync(path.join(__dirname, '../../src/database/schema.sql'), 'utf8');
   db.exec(schema);
   
-  // Clear existing data
-  db.exec('DELETE FROM nodes');
-  console.log('🗑️  Cleared existing data\n');
+  // Clear existing data, but preserve community nodes (is_community = 1).
+  // Community nodes are fetched separately (npm run fetch:community) and are not
+  // part of the installed n8n packages, so a full wipe would drop them on every
+  // rebuild and force a manual backup/restore. Scoping the delete to core/base
+  // nodes lets them survive the rebuild automatically.
+  db.exec('DELETE FROM nodes WHERE is_community = 0 OR is_community IS NULL');
+  console.log('🗑️  Cleared core/base nodes (community nodes preserved)\n');
   
   // Load all nodes
   const nodes = await loader.loadAllNodes();
@@ -124,7 +129,28 @@ async function rebuild() {
   }
   
   console.log(`💾 Save completed: ${saved} nodes saved successfully`);
-  
+
+  // Rebuild FTS5 index to guarantee consistency.
+  // The content-synced FTS5 table (content=nodes) can accumulate stale rowid
+  // references when rows are deleted and re-inserted during a rebuild cycle.
+  // An explicit rebuild re-indexes all current rows from the nodes table.
+  console.log('\n🔍 Rebuilding FTS5 search index...');
+  db.prepare("INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild')").run();
+  console.log('✅ FTS5 index rebuilt successfully');
+
+  // Hard completeness gate: every canonical core node must exist after a
+  // rebuild. A silently dropped core node (e.g. extractFromFile) makes the
+  // validator hard-error on valid workflows, so fail the build loudly.
+  console.log('\n🧩 Checking core node completeness...');
+  try {
+    assertCoreNodesPresent(repository);
+    console.log('✅ All canonical core nodes present');
+  } catch (error) {
+    console.error(`❌ ${(error as Error).message}`);
+    db.close();
+    process.exit(1);
+  }
+
   // Validation check
   console.log('\n🔍 Running validation checks...');
   try {
@@ -282,5 +308,8 @@ function validateDatabase(repository: NodeRepository): { passed: boolean; issues
 
 // Run if called directly
 if (require.main === module) {
-  rebuild().catch(console.error);
+  rebuild().catch(error => {
+    console.error(error);
+    process.exit(1);
+  });
 }

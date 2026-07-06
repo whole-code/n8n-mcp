@@ -120,4 +120,19 @@ describe('SimpleCache Memory Leak Fix', () => {
     cache = new SimpleCache();
     expect(typeof cache.destroy).toBe('function');
   });
+
+  it('treats the ttl argument as seconds, not milliseconds', () => {
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    cache = new SimpleCache();
+
+    // 60-second TTL: still valid at +59s, expired at +61s.
+    cache.set('k', 'v', 60);
+    expect(cache.get('k')).toBe('v');
+
+    vi.advanceTimersByTime(59_000);
+    expect(cache.get('k')).toBe('v');
+
+    vi.advanceTimersByTime(2_000); // total +61s
+    expect(cache.get('k')).toBeNull();
+  });
 });

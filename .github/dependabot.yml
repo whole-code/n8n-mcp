@@ -1,0 +1,146 @@
+# GitHub Dependabot Configuration
+# Automated dependency vulnerability scanning and updates
+
+version: 2
+updates:
+  # Monitor root npm dependencies
+  #
+  # NOTE: package.runtime.json (the slim manifest the published runtime images
+  # install from) is a non-standard file Dependabot cannot manage directly. When
+  # bumping a runtime dependency here, mirror the change into package.runtime.json
+  # so the published images pick it up.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 10
+    reviewers:
+      - "czlonkowski"
+    versioning-strategy: "increase"
+    commit-message:
+      prefix: "deps"
+      prefix-development: "deps-dev"
+      include: "scope"
+    groups:
+      # Version updates (weekly schedule): batch minor/patch bumps.
+      production-dependencies:
+        applies-to: version-updates
+        dependency-type: "production"
+        update-types:
+          - "minor"
+          - "patch"
+      development-dependencies:
+        applies-to: version-updates
+        dependency-type: "development"
+        update-types:
+          - "minor"
+          - "patch"
+      # Security updates: batch the advisory-driven PRs into two grouped PRs
+      # (runtime vs dev) so the alert backlog cannot re-accumulate one-PR-per-CVE.
+      production-security:
+        applies-to: security-updates
+        dependency-type: "production"
+      development-security:
+        applies-to: security-updates
+        dependency-type: "development"
+    labels:
+      - "dependencies"
+      - "security"
+    allow:
+      - dependency-type: "all"
+    ignore:
+      # The n8n packages are updated via `npm run update:n8n`, which also rebuilds
+      # data/nodes.db while preserving community nodes (see scripts/update-n8n-deps.js).
+      # A plain Dependabot bump would ship a stale node catalog, so exclude them here.
+      - dependency-name: "n8n"
+      - dependency-name: "n8n-core"
+      - dependency-name: "n8n-workflow"
+      - dependency-name: "n8n-nodes-base"
+      # The "@n8n/*" wildcard covers current and future scoped packages
+      # (dependency-name supports "*" globs); the explicit entry is listed too
+      # so the intent is unambiguous for the package we actually depend on.
+      - dependency-name: "@n8n/*"
+      - dependency-name: "@n8n/n8n-nodes-langchain"
+      # @modelcontextprotocol/sdk and zod are pinned to exact versions on purpose:
+      # zod v4 breaks the MCP SDK ("_zod" property errors) and the SDK/zod pair is
+      # verified by the "Fresh Install Dependency Check" CI guard (see issues
+      # #440, #444, #446, #447, #450). Their versions are also mirrored in
+      # package.runtime.json, which Dependabot cannot manage. A Dependabot bump
+      # therefore always fails CI, so exclude them and update via a manual,
+      # compatibility-tested change instead.
+      - dependency-name: "@modelcontextprotocol/sdk"
+      - dependency-name: "zod"
+    rebase-strategy: "auto"
+
+  # Monitor the UI apps package (its own lockfile; built by `npm run build:ui`).
+  # Not a root npm workspace, so Dependabot needs a separate entry to see it.
+  - package-ecosystem: "npm"
+    directory: "/ui-apps"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    reviewers:
+      - "czlonkowski"
+    commit-message:
+      prefix: "deps(ui)"
+      prefix-development: "deps-dev(ui)"
+      include: "scope"
+    groups:
+      production-dependencies:
+        dependency-type: "production"
+        update-types:
+          - "minor"
+          - "patch"
+      development-dependencies:
+        dependency-type: "development"
+        update-types:
+          - "minor"
+          - "patch"
+    labels:
+      - "dependencies"
+      - "ui"
+    rebase-strategy: "auto"
+
+  # Monitor GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    labels:
+      - "github-actions"
+      - "dependencies"
+    reviewers:
+      - "czlonkowski"
+    rebase-strategy: "auto"
+
+  # Monitor Docker base images
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "docker"
+      include: "scope"
+    labels:
+      - "docker"
+      - "dependencies"
+    reviewers:
+      - "czlonkowski"
+    rebase-strategy: "auto"

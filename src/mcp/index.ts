@@ -2,10 +2,11 @@
 
 import { N8NDocumentationMCPServer } from './server';
 import { logger } from '../utils/logger';
-import { TelemetryConfigManager } from '../telemetry/config-manager';
+import { handleTelemetryCliIfPresent } from '../telemetry/telemetry-cli';
 import { EarlyErrorLogger } from '../telemetry/early-error-logger';
 import { STARTUP_CHECKPOINTS, findFailedCheckpoint, StartupCheckpoint } from '../telemetry/startup-checkpoints';
 import { existsSync } from 'fs';
+import { tearDownStdin } from '../utils/stdin-teardown';
 
 // Add error details to stderr for Claude Desktop debugging
 process.on('uncaughtException', (error) => {
@@ -29,6 +30,12 @@ process.on('unhandledRejection', (reason, promise) => {
  * Uses multiple detection methods for robustness:
  * 1. Environment variables (IS_DOCKER, IS_CONTAINER with multiple formats)
  * 2. Filesystem markers (/.dockerenv, /run/.containerenv)
+ *
+ * Containers manage their own lifecycle via signals (SIGTERM on `docker stop`),
+ * not via stdin close. Detached containers (`docker run -d` without `-i`) have
+ * stdin redirected from /dev/null, which would otherwise trigger immediate
+ * stdin-close shutdown — see the guarded block below and Issue #711 for the
+ * trade-off with stateless stdio clients.
  */
 function isContainerEnvironment(): boolean {
   // Check environment variables with multiple truthy formats
@@ -66,47 +73,16 @@ async function main() {
     earlyLogger.logCheckpoint(STARTUP_CHECKPOINTS.PROCESS_STARTED);
     checkpoints.push(STARTUP_CHECKPOINTS.PROCESS_STARTED);
 
-    // Handle telemetry CLI commands
-    const args = process.argv.slice(2);
-  if (args.length > 0 && args[0] === 'telemetry') {
-    const telemetryConfig = TelemetryConfigManager.getInstance();
-    const action = args[1];
+    // Handle telemetry CLI commands (exits on match)
+    handleTelemetryCliIfPresent(process.argv.slice(2));
 
-    switch (action) {
-      case 'enable':
-        telemetryConfig.enable();
-        process.exit(0);
-        break;
-      case 'disable':
-        telemetryConfig.disable();
-        process.exit(0);
-        break;
-      case 'status':
-        console.log(telemetryConfig.getStatus());
-        process.exit(0);
-        break;
-      default:
-        console.log(`
-Usage: n8n-mcp telemetry [command]
-
-Commands:
-  enable   Enable anonymous telemetry
-  disable  Disable anonymous telemetry
-  status   Show current telemetry status
-
-Learn more: https://github.com/czlonkowski/n8n-mcp/blob/main/PRIVACY.md
-`);
-        process.exit(args[1] ? 1 : 0);
-    }
-  }
-
-  const mode = process.env.MCP_MODE || 'stdio';
+    const mode = process.env.MCP_MODE || 'stdio';
 
     // Checkpoint: Telemetry initializing (fire-and-forget, no await)
     earlyLogger.logCheckpoint(STARTUP_CHECKPOINTS.TELEMETRY_INITIALIZING);
     checkpoints.push(STARTUP_CHECKPOINTS.TELEMETRY_INITIALIZING);
 
-    // Telemetry is already initialized by TelemetryConfigManager in imports
+    // Telemetry is loaded transitively via EarlyErrorLogger.
     // Mark as ready (fire-and-forget, no await)
     earlyLogger.logCheckpoint(STARTUP_CHECKPOINTS.TELEMETRY_READY);
     checkpoints.push(STARTUP_CHECKPOINTS.TELEMETRY_READY);
@@ -174,10 +150,14 @@ Learn more: https://github.com/czlonkowski/n8n-mcp/blob/main/PRIVACY.md
 
           await server.shutdown();
 
-          // Close stdin to signal we're done reading
-          if (process.stdin && !process.stdin.destroyed) {
-            process.stdin.pause();
-            process.stdin.destroy();
+          // Platform-aware stdin teardown — see stdin-teardown.ts (Issues #383/#385).
+          tearDownStdin();
+
+          // On win32 we skip stdin.destroy() (see stdin-teardown.ts); the unref'd
+          // shutdown timeout below can't force an exit, so exit explicitly here to
+          // mirror the published stdio-wrapper bin (Issues #383 / #385).
+          if (process.platform === 'win32') {
+            process.exit(0);
           }
 
           // Exit with timeout to ensure we don't hang
@@ -195,22 +175,25 @@ Learn more: https://github.com/czlonkowski/n8n-mcp/blob/main/PRIVACY.md
         }
       };
 
-      // Handle termination signals (fixes Issue #277)
+      // Handle termination signals (fixes Issue #277).
       // Signal handling strategy:
-      // - Claude Desktop (Windows/macOS/Linux): stdin handlers + signal handlers
-      //   Primary: stdin close when Claude quits | Fallback: SIGTERM/SIGINT/SIGHUP
-      // - Container environments: signal handlers ONLY
-      //   stdin closed in detached mode would trigger immediate shutdown
-      //   Container detection via IS_DOCKER/IS_CONTAINER env vars + filesystem markers
-      // - Manual execution: Both stdin and signal handlers work
+      // - Claude Desktop / local stdio clients: stdin close is the primary path,
+      //   signals are the fallback.
+      // - Detached containers (`docker run -d` without `-i`): stdin is redirected
+      //   from /dev/null so close fires immediately; shutdown is driven by
+      //   SIGTERM from `docker stop` instead.
+      // Issue #711's `npx n8n-mcp` repro is handled by `stdio-wrapper.ts`, which
+      // is the published bin entry after the release.yml fix — the wrapper
+      // registers stdin close unconditionally. Running `index.js` directly is
+      // the Docker path; keep the container guard so detached containers stay
+      // alive for their natural signal-based lifecycle.
       process.on('SIGTERM', () => shutdown('SIGTERM'));
       process.on('SIGINT', () => shutdown('SIGINT'));
       process.on('SIGHUP', () => shutdown('SIGHUP'));
 
-      // Handle stdio disconnect - PRIMARY shutdown mechanism for Claude Desktop
-      // Skip in container environments (Docker, Kubernetes, Podman) to prevent
-      // premature shutdown when stdin is closed in detached mode.
-      // Containers rely on signal handlers (SIGTERM/SIGINT/SIGHUP) for proper shutdown.
+      // Handle stdio disconnect - PRIMARY shutdown mechanism for Claude Desktop.
+      // Skip in container environments (Docker, Kubernetes, Podman) to keep
+      // detached containers alive for their signal-based lifecycle.
       const isContainer = isContainerEnvironment();
 
       if (!isContainer && process.stdin.readable && !process.stdin.destroyed) {

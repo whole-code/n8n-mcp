@@ -20,7 +20,13 @@ vi.mock('../../../../src/config/n8n-api', () => ({
 // Mock SSRFProtection
 vi.mock('../../../../src/utils/ssrf-protection', () => ({
   SSRFProtection: {
-    validateWebhookUrl: vi.fn(async () => ({ valid: true, reason: '' })),
+    validateWebhookUrl: vi.fn(async () => ({
+      valid: true,
+      reason: '',
+      address: '8.8.8.8',
+      family: 4,
+    })),
+    createPinnedAgents: vi.fn(() => ({ httpAgent: {}, httpsAgent: {} })),
   },
 }));
 
@@ -216,7 +222,9 @@ describe('ChatHandler', () => {
       const response = await handler.execute(input, workflow, triggerInfo);
 
       expect(response.success).toBe(true);
-      expect(response.metadata?.sessionId).toMatch(/^session_\d+_[a-z0-9]+$/);
+      // Session IDs are `session_{timestamp}_{UUIDv4}`. UUIDs contain
+      // hyphens, so the charset is `[a-f0-9-]`.
+      expect(response.metadata?.sessionId).toMatch(/^session_\d+_[a-f0-9-]+$/);
     });
 
     it('should use trigger info to build chat URL', async () => {
@@ -564,6 +572,30 @@ describe('ChatHandler', () => {
       expect(config.validateStatus!(499)).toBe(true);
       expect(config.validateStatus!(500)).toBe(false);
       expect(config.validateStatus!(503)).toBe(false);
+    });
+
+    it('should disable redirect-following on outbound request', async () => {
+      const input = {
+        triggerType: 'chat' as const,
+        workflowId: 'workflow-1',
+        message: 'hi',
+      };
+      const workflow = {
+        id: 'workflow-1',
+        name: 'Test',
+        nodes: [],
+        connections: {},
+        active: true,
+      } as any;
+      const triggerInfo = {
+        triggerType: 'chat',
+        webhookPath: 'chat-test',
+      } as any;
+
+      await handler.execute(input, workflow, triggerInfo);
+
+      const config = vi.mocked(axios.request).mock.calls[0][0];
+      expect(config.maxRedirects).toBe(0);
     });
   });
 });

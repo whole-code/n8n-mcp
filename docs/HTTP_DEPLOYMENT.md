@@ -620,7 +620,7 @@ AUTH_RATE_LIMIT_MAX=20
 
 ### SSRF Protection
 
-Prevents Server-Side Request Forgery attacks when using webhook triggers:
+Prevents Server-Side Request Forgery attacks. The same gate applies to webhook trigger URLs (chat, form, generic webhook), the n8n API client base URL (`N8N_API_URL`), and per-request URLs supplied via the `x-n8n-url` header in multi-tenant mode.
 
 **Three Security Modes:**
 
@@ -876,6 +876,32 @@ curl -X POST https://your-server.com/mcp \
 - 📝 Audit workflow changes via n8n's audit log
 - 🚫 Never expose n8n API directly to the internet
 - ✅ Use MCP server as a security layer
+
+### Read-Only Deployment Recipe
+
+For governance-sensitive environments where the AI agent should be able to read workflow and execution data but must not modify or delete anything, combine two layers of control:
+
+**Layer 1 — MCP layer:**
+
+Some tools are write/destructive or handle sensitive data and should be removed entirely via `DISABLED_TOOLS` (`n8n_manage_credentials` and `n8n_manage_datatable` also offer read operations, but even their reads expose sensitive material):
+
+```bash
+DISABLED_TOOLS=n8n_create_workflow,n8n_update_full_workflow,n8n_update_partial_workflow,n8n_delete_workflow,n8n_autofix_workflow,n8n_deploy_template,n8n_test_workflow,n8n_manage_credentials,n8n_manage_datatable
+```
+
+Two tools bundle read and write operations under a single name. Use `DISABLED_TOOL_OPERATIONS` to block only their destructive branches while keeping `list` and `get`:
+
+```bash
+DISABLED_TOOL_OPERATIONS=n8n_workflow_versions:delete,rollback,prune;n8n_executions:delete
+```
+
+The operation parameter enum in the tool schema is updated to exclude disabled values, reducing the likelihood the model attempts them. Any attempt that does reach the server is rejected at dispatch before the handler runs.
+
+**Layer 2 — n8n API key RBAC:**
+
+Scope the `N8N_API_KEY` to read-only permissions in your n8n instance (Settings → API → create a key with read-only scope). This ensures that even if the MCP layer is misconfigured, the n8n API itself will reject destructive requests.
+
+Both layers together provide defence in depth. The MCP layer is a convenience knob; the n8n API RBAC is the authoritative enforcement boundary.
 
 ## 📦 Updates & Maintenance
 

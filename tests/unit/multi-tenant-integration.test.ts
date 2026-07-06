@@ -38,6 +38,23 @@ describe('Multi-Tenant Support Integration', () => {
 
   describe('InstanceContext Validation', () => {
     describe('Real-world URL patterns', () => {
+      // Since v2.47.4 (GHSA-4ggg-h7ph-26qr) validateInstanceContext runs
+      // SSRF checks that reject localhost and private IPs under the default
+      // `strict` mode. These test URLs include legitimate local/private n8n
+      // deployments that require `permissive` mode to be accepted.
+      let originalSecurityMode: string | undefined;
+      beforeEach(() => {
+        originalSecurityMode = process.env.WEBHOOK_SECURITY_MODE;
+        process.env.WEBHOOK_SECURITY_MODE = 'permissive';
+      });
+      afterEach(() => {
+        if (originalSecurityMode === undefined) {
+          delete process.env.WEBHOOK_SECURITY_MODE;
+        } else {
+          process.env.WEBHOOK_SECURITY_MODE = originalSecurityMode;
+        }
+      });
+
       const validUrls = [
         'https://app.n8n.cloud',
         'https://tenant1.n8n.cloud',

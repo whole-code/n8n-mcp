@@ -151,7 +151,7 @@ describe('n8nDocumentationToolsFinal', () => {
       it('should have searchMode parameter with correct enum values', () => {
         const searchModeParam = tool?.inputSchema.properties?.searchMode;
         expect(searchModeParam).toBeDefined();
-        expect(searchModeParam.enum).toEqual(['keyword', 'by_nodes', 'by_task', 'by_metadata']);
+        expect(searchModeParam.enum).toEqual(['keyword', 'by_nodes', 'by_task', 'by_metadata', 'patterns']);
         expect(searchModeParam.default).toBe('keyword');
       });
 

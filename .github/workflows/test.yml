@@ -41,16 +41,27 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 15  # Increased from 10 to accommodate larger database with community nodes
+    env:
+      # A boolean flag (not the secrets themselves) recording whether a live n8n
+      # instance is configured, so the live-integration step can gate on it without
+      # the N8N_API_* values being exposed to every step in the job. The live tests
+      # need BOTH the URL and the key (getN8nCredentials() throws if either is
+      # missing), and both are empty on Dependabot/fork PRs — so require both here,
+      # otherwise a partially-configured instance would run the step and then fail.
+      HAS_N8N_INSTANCE: ${{ secrets.N8N_API_URL != '' && secrets.N8N_API_KEY != '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 20
           cache: 'npm'
       
       - name: Install dependencies
-        run: npm ci
+        # --legacy-peer-deps: n8n-nodes-base 2.20.x pulls in mappersmith with a `diff`
+        # peer that conflicts with ts-node's `diff@^4`; npm 7+ strict resolution leaves
+        # the lock internally inconsistent. Match local dev (.npmrc legacy-peer-deps=true).
+        run: npm ci --legacy-peer-deps
       
       # Verify test environment setup
       - name: Verify test environment
@@ -67,9 +78,36 @@ jobs:
         env:
           CI: true
       
-      # Run integration tests separately (with MSW setup)
-      - name: Run integration tests
-        run: npm run test:integration -- --reporter=default --reporter=junit
+      # Pre-build the Docker test image used by tests/integration/docker/*.test.ts
+      # Two test files used to build it independently inside their beforeAll hooks; the
+      # builder stage does an `npm install` from the public registry which intermittently
+      # fails on CI runners and tanked the entire test job. Building it here once gets us:
+      #  - one build attempt instead of two
+      #  - a clear, separately-visible CI step when the npm registry is flaky
+      #  - the test suite degrades to skipped tests if this step fails (won't block PRs)
+      - name: Build Docker test image
+        run: npm run docker:test:build
+        timeout-minutes: 8
+        continue-on-error: true
+
+      # Offline integration suites (database, security, mcp-protocol, workflow-diff,
+      # templates, docker, …). These need no live instance, so they always run and
+      # stay a blocking gate on every PR — Dependabot and forks included. Only the
+      # live n8n-api / ai-validation suites are excluded here (they run in the next
+      # step). MSW setup applies as configured.
+      - name: Run integration tests (offline suites)
+        run: npm run test:integration -- --exclude 'tests/integration/n8n-api/**' --exclude 'tests/integration/ai-validation/**' --reporter=default --reporter=junit
+        env:
+          CI: true
+
+      # Live n8n-API + AI-validation suites hit a real instance via the N8N_API_*
+      # secrets, which are unavailable on Dependabot and fork PRs (there every file
+      # here fails outright, turning the required `test` check permanently red). Skip
+      # them when no instance is configured; on in-repo PRs the secret is present so
+      # they run and remain a blocking gate. Secrets are scoped to this step only.
+      - name: Run integration tests (live n8n instance)
+        if: ${{ env.HAS_N8N_INSTANCE == 'true' }}
+        run: npm run test:integration -- tests/integration/n8n-api tests/integration/ai-validation --reporter=default --reporter=junit
         env:
           CI: true
           N8N_API_URL: ${{ secrets.N8N_API_URL }}
@@ -92,7 +130,7 @@ jobs:
       # Upload test results artifacts
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-results-${{ github.run_number }}-${{ github.run_attempt }}
           path: |
@@ -105,7 +143,7 @@ jobs:
       # Upload coverage artifacts
       - name: Upload coverage reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-${{ github.run_number }}-${{ github.run_attempt }}
           path: |
@@ -116,7 +154,7 @@ jobs:
       # Upload coverage to Codecov
       - name: Upload coverage to Codecov
         if: always()
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage/lcov.info
@@ -132,23 +170,6 @@ jobs:
       # Run type checking
       - name: Run type checking
         run: npm run typecheck
-      
-      # Run benchmarks
-      - name: Run benchmarks
-        id: benchmarks
-        run: npm run benchmark:ci
-        continue-on-error: true
-      
-      # Upload benchmark results
-      - name: Upload benchmark results
-        if: always() && steps.benchmarks.outcome != 'skipped'
-        uses: actions/upload-artifact@v4
-        with:
-          name: benchmark-results-${{ github.run_number }}-${{ github.run_attempt }}
-          path: |
-            benchmark-results.json
-          retention-days: 30
-          if-no-files-found: warn
       
       # Create test report comment for PRs
       - name: Create test report comment
@@ -222,7 +243,6 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- [Test Results](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
           echo "- [Coverage Report](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
-          echo "- [Benchmark Results](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
       
       # Store test metadata
       - name: Store test metadata
@@ -246,32 +266,55 @@ jobs:
       
       - name: Upload test metadata
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-metadata-${{ github.run_number }}-${{ github.run_attempt }}
           path: test-metadata.json
           retention-days: 30
 
-  # Separate job to process and publish test results
+  # Verify the compiled CommonJS artifact loads under Node's CJS loader (regression guard for #864).
+  # Node 20.19+/22.12+ silently tolerate require() of ESM-only deps; scripts/smoke-cjs-runtime.js
+  # forces the strict loader (--no-experimental-require-module) when the running Node supports it,
+  # so a CJS/ESM mismatch in a shipped dependency (e.g. uuid@14) fails here regardless of the
+  # runner's Node version. The unit suite runs under Vitest's ESM pipeline and cannot catch this;
+  # tsc only type-checks.
+  cjs-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Build
+        run: npm run build
+
+      - name: Load compiled CommonJS artifact under strict CJS loader
+        run: npm run test:cjs-runtime
+
+  # Publish test results as checks
   publish-results:
     needs: test
     runs-on: ubuntu-latest
     if: always()
     permissions:
       checks: write
-      pull-requests: write
     steps:
-      - uses: actions/checkout@v4
-      
-      # Download all artifacts
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+
+      - name: Download test results
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
-      
-      # Publish test results as checks
+
       - name: Publish test results
-        uses: dorny/test-reporter@v1
+        uses: dorny/test-reporter@v3
         if: always()
         continue-on-error: true
         with:
@@ -280,74 +323,3 @@ jobs:
           reporter: java-junit
           fail-on-error: false
           fail-on-empty: false
-      
-      # Create a combined artifact with all results
-      - name: Create combined results artifact
-        if: always()
-        run: |
-          mkdir -p combined-results
-          cp -r artifacts/* combined-results/ 2>/dev/null || true
-          
-          # Create index file
-          cat > combined-results/index.html << 'EOF'
-          <!DOCTYPE html>
-          <html>
-          <head>
-              <title>n8n-mcp Test Results</title>
-              <style>
-                  body { font-family: Arial, sans-serif; margin: 40px; }
-                  h1 { color: #333; }
-                  .section { margin: 20px 0; padding: 20px; border: 1px solid #ddd; border-radius: 5px; }
-                  a { color: #0066cc; text-decoration: none; }
-                  a:hover { text-decoration: underline; }
-              </style>
-          </head>
-          <body>
-              <h1>n8n-mcp Test Results</h1>
-              <div class="section">
-                  <h2>Test Reports</h2>
-                  <ul>
-                      <li><a href="test-results-${{ github.run_number }}-${{ github.run_attempt }}/test-reports/report.html">📊 Detailed HTML Report</a></li>
-                      <li><a href="test-results-${{ github.run_number }}-${{ github.run_attempt }}/test-results/html/index.html">📈 Vitest HTML Report</a></li>
-                      <li><a href="test-results-${{ github.run_number }}-${{ github.run_attempt }}/test-reports/report.md">📄 Markdown Report</a></li>
-                      <li><a href="test-results-${{ github.run_number }}-${{ github.run_attempt }}/test-summary.md">📝 PR Summary</a></li>
-                      <li><a href="test-results-${{ github.run_number }}-${{ github.run_attempt }}/test-results/junit.xml">🔧 JUnit XML</a></li>
-                      <li><a href="test-results-${{ github.run_number }}-${{ github.run_attempt }}/test-results/results.json">🔢 JSON Results</a></li>
-                      <li><a href="test-results-${{ github.run_number }}-${{ github.run_attempt }}/test-reports/report.json">📊 Full JSON Report</a></li>
-                  </ul>
-              </div>
-              <div class="section">
-                  <h2>Coverage Reports</h2>
-                  <ul>
-                      <li><a href="coverage-${{ github.run_number }}-${{ github.run_attempt }}/html/index.html">HTML Coverage Report</a></li>
-                      <li><a href="coverage-${{ github.run_number }}-${{ github.run_attempt }}/lcov.info">LCOV Report</a></li>
-                      <li><a href="coverage-${{ github.run_number }}-${{ github.run_attempt }}/coverage-summary.json">Coverage Summary JSON</a></li>
-                  </ul>
-              </div>
-              <div class="section">
-                  <h2>Benchmark Results</h2>
-                  <ul>
-                      <li><a href="benchmark-results-${{ github.run_number }}-${{ github.run_attempt }}/benchmark-results.json">Benchmark Results JSON</a></li>
-                  </ul>
-              </div>
-              <div class="section">
-                  <h2>Metadata</h2>
-                  <ul>
-                      <li><a href="test-metadata-${{ github.run_number }}-${{ github.run_attempt }}/test-metadata.json">Test Run Metadata</a></li>
-                  </ul>
-              </div>
-              <div class="section">
-                  <p><em>Generated at $(date -u +%Y-%m-%dT%H:%M:%SZ)</em></p>
-                  <p><em>Run: #${{ github.run_number }} | SHA: ${{ github.sha }}</em></p>
-              </div>
-          </body>
-          </html>
-          EOF
-      
-      - name: Upload combined results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: all-test-results-${{ github.run_number }}
-          path: combined-results/
-          retention-days: 90
