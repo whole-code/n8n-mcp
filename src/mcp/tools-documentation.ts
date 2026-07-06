@@ -1,6 +1,10 @@
 import { toolsDocumentation } from './tool-docs';
 
-export function getToolDocumentation(toolName: string, depth: 'essentials' | 'full' = 'essentials'): string {
+export function getToolDocumentation(
+  toolName: string,
+  depth: 'essentials' | 'full' = 'essentials',
+  disabledOperations?: Set<string>
+): string {
   // Check for special documentation topics
   if (toolName === 'javascript_code_node_guide') {
     return getJavaScriptCodeNodeGuide(depth);
@@ -14,10 +18,14 @@ export function getToolDocumentation(toolName: string, depth: 'essentials' | 'fu
     return `Tool '${toolName}' not found. Use tools_documentation() to see available tools.`;
   }
 
+  const disabledNotice = disabledOperations && disabledOperations.size > 0
+    ? `\n> **Server policy**: The following operations are disabled in this deployment: ${[...disabledOperations].join(', ')}\n`
+    : '';
+
   if (depth === 'essentials') {
     const { essentials } = tool;
     return `# ${tool.name}
-
+${disabledNotice}
 ${essentials.description}
 
 **Example**: ${essentials.example}
@@ -35,7 +43,7 @@ For full documentation, use: tools_documentation({topic: "${toolName}", depth: "
   // Full documentation
   const { full } = tool;
   return `# ${tool.name}
-
+${disabledNotice}
 ${full.description}
 
 ## Parameters
@@ -65,10 +73,21 @@ ${full.pitfalls.map(p => `- ${p}`).join('\n')}
 ${full.relatedTools.map(t => `- ${t}`).join('\n')}`;
 }
 
-export function getToolsOverview(depth: 'essentials' | 'full' = 'essentials'): string {
-  // Get version info from package.json
+function buildDisabledOpsOverviewSection(disabledToolOps?: Map<string, Set<string>>): string {
+  if (!disabledToolOps || disabledToolOps.size === 0) return '';
+  const lines = [...disabledToolOps.entries()]
+    .map(([tool, ops]) => `- **${tool}**: ${[...ops].join(', ')}`);
+  return `\n\n## Server Policy: Disabled Operations\nThe following operations are disabled in this deployment and will be rejected if called:\n${lines.join('\n')}`;
+}
+
+export function getToolsOverview(
+  depth: 'essentials' | 'full' = 'essentials',
+  disabledToolOps?: Map<string, Set<string>>
+): string {
+  // Get version info from package.json. We track n8n-nodes-base directly
+  // instead of the n8n meta package, so use that as the compatibility hint.
   const packageJson = require('../../package.json');
-  const supportedN8nVersion = packageJson.dependencies?.n8n?.replace(/[^0-9.]/g, '') || 'latest';
+  const supportedN8nVersion = packageJson.dependencies?.['n8n-nodes-base']?.replace(/[^0-9.]/g, '') || 'latest';
   
   if (depth === 'essentials') {
     return `# n8n MCP Tools Reference
@@ -102,7 +121,7 @@ When working with Code nodes, always start by calling the relevant guide:
    - validate_node({nodeType: "nodes-base.slack", config: {...}}) - Full validation with errors/warnings/suggestions
    - validate_workflow({workflow: {...}}) - Validate entire workflow
 
-## Tool Categories (19 Tools Total)
+## Tool Categories (21 Tools Total)
 
 **Discovery Tools** (1 tool)
 - search_nodes - Full-text search across all nodes (supports OR, AND, FUZZY modes)
@@ -125,10 +144,11 @@ When working with Code nodes, always start by calling the relevant guide:
   - searchMode='by_nodes': Find templates using specific nodes
   - searchMode='by_task': Curated task-based templates
   - searchMode='by_metadata': Filter by complexity/services
+  - searchMode='patterns': Workflow pattern summaries from 2,700+ templates
 
-**n8n API Tools** (13 tools, requires N8N_API_URL configuration)
+**n8n API Tools** (15 tools, requires N8N_API_URL configuration)
 - n8n_create_workflow - Create new workflows
-- n8n_get_workflow - Get workflow with mode='full'/'details'/'structure'/'minimal'
+- n8n_get_workflow - Get workflow with mode='full' (draft) / 'details' / 'active' (published graph) / 'structure' / 'minimal'
 - n8n_update_full_workflow - Full workflow replacement
 - n8n_update_partial_workflow - Incremental diff-based updates
 - n8n_delete_workflow - Delete workflow
@@ -140,6 +160,7 @@ When working with Code nodes, always start by calling the relevant guide:
 - n8n_health_check - Check n8n API connectivity
 - n8n_workflow_versions - Version history and rollback
 - n8n_deploy_template - Deploy templates directly to n8n instance
+- n8n_manage_datatable - Manage data tables and rows
 
 ## Performance Characteristics
 - Instant (<10ms): search_nodes, get_node (minimal/standard)
@@ -148,7 +169,7 @@ When working with Code nodes, always start by calling the relevant guide:
 - Network-dependent: All n8n_* tools
 
 For comprehensive documentation on any tool:
-tools_documentation({topic: "tool_name", depth: "full"})`;
+tools_documentation({topic: "tool_name", depth: "full"})${buildDisabledOpsOverviewSection(disabledToolOps)}`;
   }
 
   const categories = getAllCategories();
@@ -182,7 +203,7 @@ ${tools.map(toolName => {
 - n8n API tools only available when N8N_API_URL and N8N_API_KEY are configured
 
 For detailed documentation on any tool:
-tools_documentation({topic: "tool_name", depth: "full"})`;
+tools_documentation({topic: "tool_name", depth: "full"})${buildDisabledOpsOverviewSection(disabledToolOps)}`;
 }
 
 export function searchToolDocumentation(keyword: string): string[] {

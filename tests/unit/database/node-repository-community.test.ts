@@ -119,6 +119,11 @@ class MockPreparedStatement implements PreparedStatement {
       });
     }
 
+    // saveNode - SELECT existing doc fields before upsert
+    if (this.sql.includes('SELECT npm_readme, ai_documentation_summary, ai_summary_generated_at FROM nodes')) {
+      this.get = vi.fn(() => undefined); // No existing row by default
+    }
+
     // saveNode - INSERT OR REPLACE
     if (this.sql.includes('INSERT OR REPLACE INTO nodes')) {
       this.run = vi.fn((...params: any[]): RunResult => {

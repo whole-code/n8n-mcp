@@ -5,7 +5,7 @@ export const searchNodesDoc: ToolDocumentation = {
   category: 'discovery',
   essentials: {
     description: 'Text search across node names and descriptions. Returns most relevant nodes first, with frequently-used nodes (HTTP Request, Webhook, Set, Code, Slack) prioritized in results. Searches all 800+ nodes including 300+ verified community nodes.',
-    keyParameters: ['query', 'mode', 'limit', 'source', 'includeExamples'],
+    keyParameters: ['query', 'mode', 'limit', 'source', 'includeExamples', 'includeOperations'],
     example: 'search_nodes({query: "webhook"})',
     performance: '<20ms even for complex queries',
     tips: [
@@ -14,7 +14,8 @@ export const searchNodesDoc: ToolDocumentation = {
       'FUZZY mode: Handles typos and spelling errors',
       'Use quotes for exact phrases: "google sheets"',
       'Use source="community" to search only community nodes',
-      'Use source="verified" for verified community nodes only'
+      'Use source="verified" for verified community nodes only',
+      'Use includeOperations=true to get resource/operation trees without a separate get_node call'
     ]
   },
   full: {
@@ -24,20 +25,17 @@ export const searchNodesDoc: ToolDocumentation = {
       limit: { type: 'number', description: 'Maximum results to return. Default: 20, Max: 100', required: false },
       mode: { type: 'string', description: 'Search mode: "OR" (any word matches, default), "AND" (all words required), "FUZZY" (typo-tolerant)', required: false },
       source: { type: 'string', description: 'Filter by node source: "all" (default, everything), "core" (n8n base nodes only), "community" (community nodes only), "verified" (verified community nodes only)', required: false },
-      includeExamples: { type: 'boolean', description: 'Include top 2 real-world configuration examples from popular templates for each node. Default: false. Adds ~200-400 tokens per node.', required: false }
+      includeExamples: { type: 'boolean', description: 'Include top 2 real-world configuration examples from popular templates for each node. Default: false. Adds ~200-400 tokens per node.', required: false },
+      includeOperations: { type: 'boolean', description: 'Include resource/operation tree per node. Default: false. Adds ~100-300 tokens per result but saves a get_node round-trip. Only returned for nodes with resource/operation patterns — trigger nodes and freeform nodes (Code, HTTP Request) omit this field.', required: false }
     },
     returns: 'Array of node objects sorted by relevance score. Each object contains: nodeType, displayName, description, category, relevance score. For community nodes, also includes: isCommunity (boolean), isVerified (boolean), authorName (string), npmDownloads (number). Common nodes appear first when relevance is similar.',
     examples: [
       'search_nodes({query: "webhook"}) - Returns Webhook node as top result',
-      'search_nodes({query: "database"}) - Returns MySQL, Postgres, MongoDB, Redis, etc.',
       'search_nodes({query: "google sheets", mode: "AND"}) - Requires both words',
       'search_nodes({query: "slak", mode: "FUZZY"}) - Finds Slack despite typo',
-      'search_nodes({query: "http api"}) - Finds HTTP Request, GraphQL, REST nodes',
-      'search_nodes({query: "transform data"}) - Finds Set, Code, Function, Item Lists nodes',
       'search_nodes({query: "scraping", source: "community"}) - Find community scraping nodes',
-      'search_nodes({query: "pdf", source: "verified"}) - Find verified community PDF nodes',
-      'search_nodes({query: "brightdata"}) - Find BrightData community node',
-      'search_nodes({query: "slack", includeExamples: true}) - Get Slack with template examples'
+      'search_nodes({query: "slack", includeExamples: true}) - Get Slack with template examples',
+      'search_nodes({query: "slack", includeOperations: true}) - Get Slack with resource/operation tree (7 resources, 44 ops)'
     ],
     useCases: [
       'Finding nodes when you know partial names',

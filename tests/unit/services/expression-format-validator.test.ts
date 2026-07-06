@@ -64,6 +64,8 @@ describe('ExpressionFormatValidator', () => {
 
         expect(issue).toBeTruthy();
         expect(issue?.issueType).toBe('needs-resource-locator');
+        // Corrections use mode: 'expression' which renders a raw expression input,
+        // not a dropdown — so cachedResultName is intentionally omitted (#715).
         expect(issue?.correctedValue).toEqual({
           __rl: true,
           value: '={{ $vars.GITHUB_OWNER }}',
@@ -96,13 +98,90 @@ describe('ExpressionFormatValidator', () => {
         expect(issue?.correctedValue.value).toBe('={{ $vars.GITHUB_OWNER }}');
       });
 
-      it('should warn if expression has prefix but should use RL format', () => {
+      // The "should use resource locator format" recommendation was removed:
+      // its name-suffix heuristic was 98.9% false-positive on the template
+      // corpus and its autofix corrupted plain-string configs (audit B5).
+      it('does not recommend resource locator format for a correctly prefixed expression', () => {
         const value = '={{ $vars.GITHUB_OWNER }}';
         const issue = ExpressionFormatValidator.validateAndFix(value, 'owner', githubContext);
 
-        expect(issue).toBeTruthy();
-        expect(issue?.issueType).toBe('needs-resource-locator');
-        expect(issue?.severity).toBe('warning');
+        expect(issue).toBeNull();
+      });
+
+      it('does not flag plain-string fields whose names merely end in Id (telegram chatId)', () => {
+        const telegramContext = {
+          nodeType: 'n8n-nodes-base.telegram',
+          nodeName: 'Telegram',
+          nodeId: 'telegram-1'
+        };
+        const issue = ExpressionFormatValidator.validateAndFix('={{ $json.chatId }}', 'chatId', telegramContext);
+
+        expect(issue).toBeNull();
+      });
+    });
+
+    describe('Missing cachedResultName warning (Issue #715)', () => {
+      const airtableContext = {
+        nodeType: 'n8n-nodes-base.airtable',
+        nodeName: 'Airtable',
+        nodeId: 'airtable-1'
+      };
+
+      it('warns when a __rl field is missing cachedResultName', () => {
+        const params = {
+          base: { __rl: true, mode: 'id', value: 'appXYZ' },
+          table: { __rl: true, mode: 'id', value: 'tblABC' }
+        };
+        const issues = ExpressionFormatValidator.validateNodeParameters(params, airtableContext);
+        const cachedNameIssues = issues.filter(i => i.issueType === 'missing-cached-result-name');
+        expect(cachedNameIssues).toHaveLength(2);
+        expect(cachedNameIssues[0].severity).toBe('warning');
+        expect(cachedNameIssues[0].fieldPath).toBe('base');
+        expect(cachedNameIssues[1].fieldPath).toBe('table');
+        expect(cachedNameIssues[0].explanation).toMatch(/cachedResultName/);
+      });
+
+      it('does not warn when cachedResultName is present and non-empty', () => {
+        const params = {
+          base: { __rl: true, mode: 'id', value: 'appXYZ', cachedResultName: 'My Base' }
+        };
+        const issues = ExpressionFormatValidator.validateNodeParameters(params, airtableContext);
+        expect(issues.filter(i => i.issueType === 'missing-cached-result-name')).toHaveLength(0);
+      });
+
+      it('warns when cachedResultName is present but empty string', () => {
+        const params = {
+          base: { __rl: true, mode: 'id', value: 'appXYZ', cachedResultName: '' }
+        };
+        const issues = ExpressionFormatValidator.validateNodeParameters(params, airtableContext);
+        expect(issues.filter(i => i.issueType === 'missing-cached-result-name')).toHaveLength(1);
+      });
+
+      it('does NOT warn for mode: expression (raw expression input has no dropdown)', () => {
+        // Critical regression guard: validator.generateCorrection emits __rl with
+        // mode: 'expression' and no cachedResultName — re-validating that output
+        // must not produce a fresh warning (would cause an autofix loop).
+        const params = {
+          base: { __rl: true, mode: 'expression', value: '={{ $json.baseId }}' }
+        };
+        const issues = ExpressionFormatValidator.validateNodeParameters(params, airtableContext);
+        expect(issues.filter(i => i.issueType === 'missing-cached-result-name')).toHaveLength(0);
+      });
+
+      it('does NOT warn for mode: url (URL input has no dropdown)', () => {
+        const params = {
+          base: { __rl: true, mode: 'url', value: 'https://airtable.com/appXYZ' }
+        };
+        const issues = ExpressionFormatValidator.validateNodeParameters(params, airtableContext);
+        expect(issues.filter(i => i.issueType === 'missing-cached-result-name')).toHaveLength(0);
+      });
+
+      it('warns for mode: list (list selection also uses cached labels)', () => {
+        const params = {
+          base: { __rl: true, mode: 'list', value: 'appXYZ' }
+        };
+        const issues = ExpressionFormatValidator.validateNodeParameters(params, airtableContext);
+        expect(issues.filter(i => i.issueType === 'missing-cached-result-name')).toHaveLength(1);
       });
     });
 
@@ -121,6 +200,41 @@ describe('ExpressionFormatValidator', () => {
         const issue = ExpressionFormatValidator.validateAndFix(value, 'fullName', context);
 
         expect(issue).toBeNull();
+      });
+    });
+
+    describe('Template literals inside expressions (#338, audit A4)', () => {
+      it('does not flag backtick template literals inside a prefixed expression', () => {
+        const value = '={{ $json.vat_id ? `<x>${$json.vat_id}</x>` : `<y>${$json.customer_email}</y>` }}';
+        const issue = ExpressionFormatValidator.validateAndFix(value, 'body', context);
+
+        expect(issue).toBeNull();
+      });
+    });
+
+    describe('Bracket balance leniency (audit A6)', () => {
+      it('does not flag =-prefixed JSON bodies with stray closing braces', () => {
+        const value = '={"chat_id": {{ $json.id }}, "reply_markup": {"inline_keyboard": {{ JSON.stringify($json.kb) }}}}';
+        const issue = ExpressionFormatValidator.validateAndFix(value, 'jsonBody', context);
+
+        expect(issue).toBeNull();
+      });
+
+      it('does not flag literal fields containing braces', () => {
+        const issue = ExpressionFormatValidator.validateAndFix(
+          'ads{id,status,insights{clicks,impressions}}',
+          'fields',
+          context
+        );
+
+        expect(issue).toBeNull();
+      });
+
+      it('still flags a dangling {{ in an =-prefixed value', () => {
+        const issue = ExpressionFormatValidator.validateAndFix('={{ $json.value }', 'field', context);
+
+        expect(issue).toBeTruthy();
+        expect(issue?.explanation).toContain('Unmatched expression brackets');
       });
     });
 
@@ -236,6 +350,135 @@ describe('ExpressionFormatValidator', () => {
       expect(issues[0].fieldPath).toBe('normal');
     });
 
+    describe('Junk bracket-index keys from botched partial updates (audit A5)', () => {
+      // Diff/patch tooling can write a bracket path (e.g. "assignments[5]") as a
+      // literal object key instead of mutating the array element. n8n stores such
+      // keys but ignores them at runtime. Descending into them builds a path that
+      // collides with the real array element, producing a misleading
+      // missing-prefix error on a healthy field.
+      const setContext = {
+        nodeType: 'n8n-nodes-base.set',
+        nodeName: 'Email 3 - Workflows',
+        nodeId: 'set-1'
+      };
+
+      it('ignores junk sibling keys like "assignments[5]" that n8n ignores at runtime', () => {
+        const parameters = {
+          assignments: {
+            assignments: [
+              { id: '1', name: 'text', value: "=Hi {{ $('Process One at a Time').item.json.name || 'there' }}, welcome" }
+            ],
+            'assignments[5]': { value: "Hi {{ $('Process One at a Time').item.json.name || 'there' }}, welcome" },
+            'assignments[6]': { value: '=<!DOCTYPE html><p>{{ $json.body }}</p>' }
+          }
+        };
+
+        const issues = ExpressionFormatValidator.validateNodeParameters(parameters, setContext);
+
+        expect(issues).toHaveLength(0);
+      });
+
+      it('still errors on a real array element with a missing = prefix', () => {
+        const parameters = {
+          assignments: {
+            assignments: [
+              { id: '1', name: 'text', value: 'Hi {{ $json.name }}, welcome' }
+            ]
+          }
+        };
+
+        const issues = ExpressionFormatValidator.validateNodeParameters(parameters, setContext);
+
+        expect(issues).toHaveLength(1);
+        expect(issues[0].issueType).toBe('missing-prefix');
+        expect(issues[0].fieldPath).toBe('assignments.assignments[0].value');
+        expect(issues[0].severity).toBe('error');
+      });
+    });
+
+    describe('Profile gating for the cachedResultName advisory (#715)', () => {
+      const airtableContext = {
+        nodeType: 'n8n-nodes-base.airtable',
+        nodeName: 'Airtable',
+        nodeId: 'airtable-1'
+      };
+      const buildParams = () => ({
+        base: { __rl: true, mode: 'id', value: 'appXYZ' }
+      });
+
+      it.each(['minimal', 'runtime'] as const)('suppresses the advisory under %s', (profile) => {
+        const issues = ExpressionFormatValidator.validateNodeParameters(buildParams(), airtableContext, profile);
+        expect(issues.filter(i => i.issueType === 'missing-cached-result-name')).toHaveLength(0);
+      });
+
+      it.each(['ai-friendly', 'strict'] as const)('emits the advisory under %s', (profile) => {
+        const issues = ExpressionFormatValidator.validateNodeParameters(buildParams(), airtableContext, profile);
+        expect(issues.filter(i => i.issueType === 'missing-cached-result-name')).toHaveLength(1);
+      });
+
+      it('emits the advisory when no profile is given (autofix compatibility)', () => {
+        const issues = ExpressionFormatValidator.validateNodeParameters(buildParams(), airtableContext);
+        expect(issues.filter(i => i.issueType === 'missing-cached-result-name')).toHaveLength(1);
+      });
+    });
+
+    describe('Code node raw source fields (Issue #746)', () => {
+      // Pre-fix, validateRecursive walked into jsCode/pythonCode and the universal expression
+      // validator counted {{ vs }} occurrences, false-positiving on JS object literals like
+      // `[{ json: { x: 1 }}]` that produce adjacent `}}` characters with no `{{` to match.
+      const codeContext = {
+        nodeType: 'n8n-nodes-base.code',
+        nodeName: 'Code',
+        nodeId: 'code-1'
+      };
+
+      it('does not flag jsCode containing template literals and compact `}}`', () => {
+        const parameters = {
+          jsCode: "const d='15', m='04', y='2026';\nreturn [{json:{iso:`${y}-${m}-${d}`}}];"
+        };
+        const issues = ExpressionFormatValidator.validateNodeParameters(parameters, codeContext);
+        expect(issues).toHaveLength(0);
+      });
+
+      it('does not flag pythonCode containing f-strings and compact `}}`', () => {
+        const parameters = {
+          pythonCode: "x = 1\nreturn [{'json': {'msg': f'{x} items'}}]"
+        };
+        const issues = ExpressionFormatValidator.validateNodeParameters(parameters, codeContext);
+        expect(issues).toHaveLength(0);
+      });
+
+      it('does not flag legacy functionCode field either', () => {
+        const parameters = {
+          functionCode: "return [{json:{x:1}}];"
+        };
+        const issues = ExpressionFormatValidator.validateNodeParameters(parameters, codeContext);
+        expect(issues).toHaveLength(0);
+      });
+
+      it('still validates ordinary expression fields on the same parameters object', () => {
+        const parameters = {
+          jsCode: "return [{json:{x:1}}];", // skipped
+          someExpressionField: '{{ $json.value }}' // missing = prefix — should still flag
+        };
+        const issues = ExpressionFormatValidator.validateNodeParameters(parameters, codeContext);
+        expect(issues.length).toBe(1);
+        expect(issues[0].fieldPath).toBe('someExpressionField');
+      });
+
+      it('skips jsCode even when nested under another object/array', () => {
+        // The recursion descends through arrays and nested objects, so the skip
+        // must apply wherever the key appears, not only at the top level.
+        const parameters = {
+          steps: [
+            { id: 'a', config: { jsCode: 'return [{json:{x:1}}];' } }
+          ]
+        };
+        const issues = ExpressionFormatValidator.validateNodeParameters(parameters, codeContext);
+        expect(issues).toHaveLength(0);
+      });
+    });
+
     it('should handle maximum recursion depth', () => {
       // Create a deeply nested object (105 levels deep, exceeding the limit of 100)
       let deepObject: any = { value: '{{ $json.data }}' };
@@ -313,6 +556,30 @@ describe('ExpressionFormatValidator', () => {
       expect(message).toContain('"__rl": true');
       expect(message).toContain('"value": "={{ $vars.OWNER }}"');
       expect(message).toContain('"mode": "expression"');
+    });
+
+    it('uses "Suggested shape" label for missing-cachedResultName so the placeholder is not mistaken for a valid value', () => {
+      // The correctedValue carries a placeholder string that must be filled in;
+      // labeling it "Fixed (correct)" would be misleading (Copilot caught this).
+      const issue = {
+        fieldPath: 'base',
+        currentValue: { __rl: true, mode: 'id', value: 'appXYZ' },
+        correctedValue: {
+          __rl: true,
+          mode: 'id',
+          value: 'appXYZ',
+          cachedResultName: '<set to the resource display name>'
+        },
+        issueType: 'missing-cached-result-name' as const,
+        explanation: 'resource locator is missing cachedResultName.',
+        severity: 'warning' as const
+      };
+
+      const message = ExpressionFormatValidator.formatErrorMessage(issue, context);
+
+      expect(message).toContain('Suggested shape (replace the placeholder');
+      expect(message).not.toContain('Fixed (correct):');
+      expect(message).toContain('"cachedResultName": "<set to the resource display name>"');
     });
   });
 

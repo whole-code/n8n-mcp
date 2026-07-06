@@ -1,0 +1,15 @@
+# MCPB bundle ignore file (.mcpbignore) — gitignore semantics, combined with
+# mcpb's built-in default exclusions (node_modules, .git, *.map, lockfiles, ...).
+#
+# This is an npx-based bundle: the server is fetched from npm at runtime via
+# `npx -y n8n-mcp` (see manifest.json), so NO project code ships inside the .mcpb.
+# The packed bundle should contain only manifest.json (and icon.png, if added).
+#
+# Strategy: exclude everything, then re-include the few files the bundle needs.
+# A later "!" re-include overrides an earlier broad exclude — order matters.
+
+*
+
+# Files the bundle actually needs:
+!manifest.json
+!icon.png

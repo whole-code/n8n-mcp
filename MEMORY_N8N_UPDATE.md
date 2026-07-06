@@ -1,8 +1,14 @@
 # n8n Update Process - Quick Reference
 
-## ⚡ Recommended Fast Workflow (2025-11-04)
+## ⚡ Recommended Fast Workflow (verified 2026-04-28)
 
 **CRITICAL FIRST STEP**: Check existing releases to avoid version conflicts!
+
+**IMPORTANT: Community nodes are preserved automatically!**
+- `npm run update:n8n` rebuilds the base node DB; the rebuild now skips rows where `is_community = 1`, so community nodes survive automatically (no manual backup/restore needed)
+- `npm run fetch:community` upserts by default (preserves READMEs + AI summaries) — run it to refresh/add community nodes, not to recover them
+- `npm run generate:docs:incremental` only processes nodes missing docs
+- Use `generate:docs:readme-only` first, then `generate:docs:summary-only` with a local LLM
 
 ```bash
 # 1. CHECK EXISTING RELEASES FIRST (prevents version conflicts!)
@@ -16,29 +22,39 @@ git checkout main && git pull
 npm run update:n8n:check
 
 # 4. Run update and skip tests (we'll test in CI)
+# The rebuild preserves community nodes automatically (is_community = 1 rows are not wiped).
 yes y | npm run update:n8n
 
-# 5. Refresh community nodes (standard practice!)
+# 5. Refresh community nodes (upserts - preserves existing READMEs + AI summaries!)
 npm run fetch:community
-npm run generate:docs
+# NOTE: Default mode is now "upsert" - no deletion. Use --rebuild for clean slate.
 
-# 6. Create feature branch
+# 6. Generate docs incrementally (only for new/missing nodes)
+npm run generate:docs:readme-only              # Fetch READMEs from npm (no LLM needed)
+# Then with a local LLM server running (LM Studio, vLLM, Ollama):
+N8N_MCP_LLM_BASE_URL="http://YOUR_SERVER:PORT/v1" \
+N8N_MCP_LLM_MODEL="your-model-name" \
+node dist/scripts/generate-community-docs.js --summary-only --skip-existing-summary --llm-concurrency=11
+# For vLLM with thinking models, the code auto-sends chat_template_kwargs: {enable_thinking: false}
+# Context length needed: 8K minimum (README truncated to 6000 chars, output max 2000 tokens)
+
+# 7. Create feature branch
 git checkout -b update/n8n-X.X.X
 
-# 7. Update version in package.json (must be HIGHER than latest release!)
+# 8. Update version in package.json (must be HIGHER than latest release!)
 # Edit: "version": "2.XX.X" (not the version from the release list!)
 
-# 8. Update CHANGELOG.md
+# 9. Update CHANGELOG.md
 # - Change version number to match package.json
 # - Update date to today
 # - Update dependency versions
 # - Include community node refresh counts
 
-# 9. Update README badge and node counts
+# 10. Update README badge and node counts
 # Edit line 8: Change n8n version badge to new n8n version
 # Update total node count in description (core + community)
 
-# 10. Commit and push
+# 11. Commit and push
 git add -A
 git commit -m "chore: update n8n to X.X.X and bump version to 2.XX.X
 
@@ -59,10 +75,10 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 
 git push -u origin update/n8n-X.X.X
 
-# 11. Create PR
+# 12. Create PR
 gh pr create --title "chore: update n8n to X.X.X" --body "Updates n8n and all related dependencies to the latest versions..."
 
-# 12. After PR is merged, verify release triggered
+# 13. After PR is merged, verify release triggered
 gh release list | head -1
 # If the new version appears, you're done!
 # If not, the version might have already been released - bump version again and create new PR
@@ -100,7 +116,7 @@ npm run update:all
 This single command will:
 1. ✅ Check for n8n updates and ask for confirmation
 2. ✅ Update all n8n dependencies to latest compatible versions
-3. ✅ Run all 1,182 tests (933 unit + 249 integration)
+3. ✅ Run all ~5,418 tests (~4,661 unit + ~757 integration)
 4. ✅ Validate critical nodes
 5. ✅ Build the project
 6. ✅ Bump the version
@@ -142,7 +158,7 @@ git commit -m "chore: update n8n to vX.X.X
 - Updated @n8n/n8n-nodes-langchain from X.X.X to X.X.X
 - Rebuilt node database with XXX nodes
 - Sanitized XXX workflow templates (if present)
-- All 1,182 tests passing (933 unit, 249 integration)
+- All ~5,418 tests passing (~4,661 unit, ~757 integration)
 - All validation tests passing
 
 🤖 Generated with [Claude Code](https://claude.ai/code)
@@ -181,9 +197,9 @@ This command:
 - Confirms everything is working correctly
 
 ### `npm test`
-- Runs all 1,182 tests
-- Unit tests: 933 tests across 30 files
-- Integration tests: 249 tests across 14 files
+- Runs ~5,418 tests
+- Unit tests: ~4,661 tests across ~140 files
+- Integration tests: ~757 tests across ~56 files
 - Must pass before publishing!
 
 ## Important Notes

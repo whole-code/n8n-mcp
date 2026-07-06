@@ -59,10 +59,18 @@ If you prefer Renovate over the custom solution:
 ## 📦 Tracked Dependencies
 
 The update system tracks these n8n packages:
-- `n8n` - Main package (includes n8n-nodes-base)
-- `n8n-core` - Core functionality
-- `n8n-workflow` - Workflow types and utilities
+- `n8n-nodes-base` - Core n8n nodes (loaded by the node-loader at rebuild time)
+- `n8n-core` - Runtime helpers that `n8n-nodes-base` internally `require()`s
+  (declared only as a devDependency in `n8n-nodes-base`, so we install it
+  ourselves)
+- `n8n-workflow` - Workflow types and utilities (type-only imports in our code)
 - `@n8n/n8n-nodes-langchain` - AI/LangChain nodes
+
+> **Note:** We intentionally do not depend on the `n8n` meta package. The MCP
+> server reads node metadata from a prebuilt SQLite database and never executes
+> n8n nodes, so pulling in the full n8n runtime (editor backend, task runner,
+> queue, typeorm, AI workflow builder, etc.) would bloat the dev dependency
+> tree without any runtime benefit.
 
 ## 🔍 What Happens During Updates
 
@@ -121,9 +129,8 @@ schedule:
 
 Edit `scripts/update-n8n-deps.js`:
 ```javascript
-this.n8nPackages = [
-  'n8n',
-  'n8n-core',
+const trackedDeps = [
+  'n8n-nodes-base',
   'n8n-workflow',
   '@n8n/n8n-nodes-langchain',
   // Add more packages here
@@ -144,11 +151,10 @@ Modify the GitHub Action to:
 
 ```bash
 # See current versions
-npm ls n8n n8n-core n8n-workflow @n8n/n8n-nodes-langchain
+npm ls n8n-nodes-base n8n-workflow @n8n/n8n-nodes-langchain
 
 # Check latest available
-npm view n8n version
-npm view n8n-core version
+npm view n8n-nodes-base version
 npm view n8n-workflow version
 npm view @n8n/n8n-nodes-langchain version
 ```
@@ -190,10 +196,7 @@ npm run validate
 rm -f data/nodes.db
 npm run rebuild
 
-# Check specific nodes
-npm run test-nodes
-
-# Validate database
+# Validate database (includes critical-node checks)
 npm run validate
 ```
 

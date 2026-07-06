@@ -10,6 +10,7 @@ import { SingleSessionHTTPServer } from './http-server-single-session';
 import { logger } from './utils/logger';
 import { InstanceContext } from './types/instance-context';
 import { SessionState } from './types/session-state';
+import type { AdditionalTool } from './types/additional-tools';
 
 export interface EngineHealth {
   status: 'healthy' | 'unhealthy';
@@ -26,6 +27,7 @@ export interface EngineHealth {
 export interface EngineOptions {
   sessionTimeout?: number;
   logLevel?: 'error' | 'warn' | 'info' | 'debug';
+  additionalTools?: AdditionalTool[];
 }
 
 export class N8NMCPEngine {
@@ -33,9 +35,11 @@ export class N8NMCPEngine {
   private startTime: Date;
   
   constructor(options: EngineOptions = {}) {
-    this.server = new SingleSessionHTTPServer();
+    this.server = new SingleSessionHTTPServer({
+      additionalTools: options.additionalTools,
+    });
     this.startTime = new Date();
-    
+
     if (options.logLevel) {
       process.env.LOG_LEVEL = options.logLevel;
     }

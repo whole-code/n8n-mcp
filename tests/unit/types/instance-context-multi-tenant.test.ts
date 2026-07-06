@@ -11,7 +11,7 @@
  * - Edge cases like empty strings, malformed URLs, etc.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
   InstanceContext,
   isInstanceContext,
@@ -19,6 +19,25 @@ import {
 } from '../../../src/types/instance-context';
 
 describe('Instance Context Multi-Tenant URL Validation', () => {
+  // This suite exercises FORMAT validation. Since v2.47.4 (GHSA-4ggg-h7ph-26qr),
+  // validateInstanceContext also runs SSRF checks that reject localhost and
+  // private IPs under the default `strict` mode. Force `permissive` mode for
+  // this suite so format assertions are isolated from SSRF policy. SSRF
+  // behavior is covered separately in tests/unit/flexible-instance-security.test.ts
+  // and tests/unit/utils/ssrf-protection.test.ts.
+  let originalSecurityMode: string | undefined;
+  beforeAll(() => {
+    originalSecurityMode = process.env.WEBHOOK_SECURITY_MODE;
+    process.env.WEBHOOK_SECURITY_MODE = 'permissive';
+  });
+  afterAll(() => {
+    if (originalSecurityMode === undefined) {
+      delete process.env.WEBHOOK_SECURITY_MODE;
+    } else {
+      process.env.WEBHOOK_SECURITY_MODE = originalSecurityMode;
+    }
+  });
+
   describe('IPv4 Address Validation', () => {
     describe('Valid IPv4 addresses', () => {
       const validIPv4Tests = [

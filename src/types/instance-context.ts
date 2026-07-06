@@ -6,6 +6,9 @@
  * backward compatibility with environment-based configuration.
  */
 
+import { createHash } from 'crypto';
+import { SSRFProtection } from '../utils/ssrf-protection';
+
 export interface InstanceContext {
   /**
    * Instance-specific n8n API configuration
@@ -147,6 +150,12 @@ export function validateInstanceContext(context: InstanceContext): {
       } catch {
         errors.push(`Invalid n8nApiUrl: URL format is malformed or incomplete`);
       }
+    } else {
+      // SECURITY (GHSA-4ggg-h7ph-26qr): sync URL validation.
+      const ssrf = SSRFProtection.validateUrlSync(context.n8nApiUrl);
+      if (!ssrf.valid) {
+        errors.push(`Invalid n8nApiUrl: ${ssrf.reason}`);
+      }
     }
   }
 
@@ -194,4 +203,30 @@ export function validateInstanceContext(context: InstanceContext): {
     valid: errors.length === 0,
     errors: errors.length > 0 ? errors : undefined
   };
+}
+
+/**
+ * Derive a stable, non-spoofable tenant scope id for the local
+ * workflow_versions table from an instance context.
+ *
+ * The key is a deterministic SHA-256 of the normalized n8n API URL and the
+ * API key. The API key is a secret the caller already presents to reach its
+ * own n8n instance, so a tenant cannot forge another tenant's scope id.
+ *
+ * Returns '' when no credentials are present (single-user / stdio mode), so
+ * those deployments share a single logical tenant.
+ *
+ * Must be deterministic across processes and restarts: this id is persisted
+ * in the database and compared on later reads/deletes. Do NOT use
+ * createCacheKey() from cache-utils, which uses a per-process random salt.
+ */
+export function getInstanceScopeId(context?: InstanceContext): string {
+  if (context?.n8nApiUrl && context?.n8nApiKey) {
+    const url = context.n8nApiUrl.trim().replace(/\/+$/, '').toLowerCase();
+    return createHash('sha256')
+      .update(`n8n-mcp-wv:${url}:${context.n8nApiKey}`)
+      .digest('hex')
+      .slice(0, 32);
+  }
+  return '';
 }

@@ -3,17 +3,25 @@ import { z } from 'zod';
 import { WorkflowNode, WorkflowConnection, Workflow } from '../types/n8n-api';
 import { isTriggerNode, isActivatableTrigger } from '../utils/node-type-utils';
 import { isNonExecutableNode } from '../utils/node-classification';
+import {
+  normalizeMcpWorkflowConnections,
+  normalizeMcpWorkflowNode,
+} from '../utils/mcp-input-normalizer';
 
 // Zod schemas for n8n API validation
 
-export const workflowNodeSchema = z.object({
+export const workflowNodeSchema = z.preprocess(normalizeMcpWorkflowNode, z.object({
   id: z.string(),
   name: z.string(),
   type: z.string(),
   typeVersion: z.number(),
   position: z.tuple([z.number(), z.number()]),
-  parameters: z.record(z.unknown()),
-  credentials: z.record(z.unknown()).optional(),
+  // Two-arg z.record(keySchema, valueSchema) is unambiguous in both Zod 3 and Zod 4.
+  // Zod 4 reinterprets single-arg z.record(x) as z.record(keySchema=x), which causes
+  // node-name strings to be parsed as the key schema and fail with "Invalid key in
+  // record" (#744). The MCP SDK bundles Zod 4; pinning the resolution alone is fragile.
+  parameters: z.record(z.string(), z.unknown()),
+  credentials: z.record(z.string(), z.unknown()).optional(),
   disabled: z.boolean().optional(),
   notes: z.string().optional(),
   notesInFlow: z.boolean().optional(),
@@ -23,7 +31,7 @@ export const workflowNodeSchema = z.object({
   waitBetweenTries: z.number().optional(),
   alwaysOutputData: z.boolean().optional(),
   executeOnce: z.boolean().optional(),
-});
+}));
 
 // Connection array schema used by all connection types
 const connectionArraySchema = z.array(
@@ -41,7 +49,8 @@ const connectionArraySchema = z.array(
  * Note: 'main' is optional because AI nodes exclusively use AI-specific
  * connection types (ai_languageModel, ai_memory, etc.) without main connections.
  */
-export const workflowConnectionSchema = z.record(
+export const workflowConnectionSchema = z.preprocess(normalizeMcpWorkflowConnections, z.record(
+  z.string(), // explicit key schema — see workflowNodeSchema for the Zod 3/4 rationale (#744)
   z.object({
     main: connectionArraySchema.optional(),
     error: connectionArraySchema.optional(),
@@ -51,7 +60,7 @@ export const workflowConnectionSchema = z.record(
     ai_embedding: connectionArraySchema.optional(),
     ai_vectorStore: connectionArraySchema.optional(),
   }).catchall(connectionArraySchema) // Allow additional AI connection types (ai_outputParser, ai_document, ai_textSplitter, etc.)
-);
+));
 
 export const workflowSettingsSchema = z.object({
   executionOrder: z.enum(['v0', 'v1']).default('v1'),
@@ -134,9 +143,21 @@ export function cleanWorkflowForCreate(workflow: Partial<Workflow>): Partial<Wor
 /**
  * Clean workflow data for update operations.
  *
- * This function removes read-only and computed fields that should not be sent
- * in API update requests. It filters settings to known API-accepted properties
- * to prevent "additional properties" errors.
+ * n8n's Public API write schema (workflow.yml, used for PUT /workflows/{id}) declares
+ * `additionalProperties: false` and accepts only a small set of writable top-level fields:
+ * name, nodes, connections and settings. The GET response, however, echoes back many
+ * server-managed / read-only fields (id, versionId, triggerCount, activeVersion, ...) and —
+ * on newer n8n versions — fields that aren't even in the OpenAPI spec (e.g. activeVersionId,
+ * versionCounter, nodeGroups, and a top-level `availableInMCP` column added for the MCP feature).
+ *
+ * When n8n_update_partial_workflow reads a workflow, applies a diff and writes it back, any
+ * such echoed field that a denylist doesn't explicitly drop leaks into the payload and
+ * triggers: "Invalid request: request/body must NOT have additional properties".
+ *
+ * We therefore use an ALLOWLIST rather than a denylist: only fields the write schema accepts
+ * are forwarded. This is forward-compatible — new read-only fields n8n adds in future
+ * versions can never break updates. Settings are filtered separately to their own writable
+ * allowlist below.
  *
  * NOTE: This function filters settings to ALL known properties (12 total).
  * For version-specific filtering (compatibility with older n8n versions),
@@ -147,29 +168,17 @@ export function cleanWorkflowForCreate(workflow: Partial<Workflow>): Partial<Wor
  * @returns A cleaned partial workflow suitable for API updates
  */
 export function cleanWorkflowForUpdate(workflow: Workflow): Partial<Workflow> {
-  const {
-    // Remove ALL read-only/computed fields (comprehensive list)
-    id,
-    createdAt,
-    updatedAt,
-    versionId,
-    versionCounter,
-    meta,
-    staticData,
-    pinData,
-    tags,
-    description,
-    isArchived,
-    usedCredentials,
-    sharedWithProjects,
-    triggerCount,
-    shared,
-    active,
-    activeVersionId,
-    activeVersion,
-    // Keep everything else
-    ...cleanedWorkflow
-  } = workflow as any;
+  const source = workflow as any;
+
+  // Allowlist of top-level fields we send on update. These are exactly the fields the
+  // previous denylist effectively forwarded, so behavior is unchanged — only the mechanism
+  // (keep-known vs drop-known) differs. `description` is omitted because some n8n versions
+  // reject it on update (Issue #431), and `staticData`/`pinData` are server-managed.
+  const cleanedWorkflow: Record<string, unknown> = {};
+  if (source.name !== undefined) cleanedWorkflow.name = source.name;
+  if (source.nodes !== undefined) cleanedWorkflow.nodes = source.nodes;
+  if (source.connections !== undefined) cleanedWorkflow.connections = source.connections;
+  if (source.settings !== undefined) cleanedWorkflow.settings = source.settings;
 
   // ALL known settings properties accepted by n8n Public API (as of n8n 1.119.0+)
   // This list is the UNION of all properties ever accepted by any n8n version
@@ -195,7 +204,7 @@ export function cleanWorkflowForUpdate(workflow: Workflow): Partial<Workflow> {
   if (cleanedWorkflow.settings && typeof cleanedWorkflow.settings === 'object') {
     // Filter to only known properties (security + prevent garbage)
     const filteredSettings: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(cleanedWorkflow.settings)) {
+    for (const [key, value] of Object.entries(cleanedWorkflow.settings as Record<string, unknown>)) {
       if (ALL_KNOWN_SETTINGS_PROPERTIES.has(key)) {
         filteredSettings[key] = value;
       }
@@ -213,9 +222,9 @@ export function cleanWorkflowForUpdate(workflow: Workflow): Partial<Workflow> {
     cleanedWorkflow.settings = { executionOrder: 'v1' as const };
   }
 
-  ensureWebhookIds(cleanedWorkflow.nodes);
+  ensureWebhookIds(cleanedWorkflow.nodes as WorkflowNode[] | undefined);
 
-  return cleanedWorkflow;
+  return cleanedWorkflow as Partial<Workflow>;
 }
 
 // Validate workflow structure
@@ -344,10 +353,10 @@ export function validateWorkflowStructure(workflow: Partial<Workflow>): string[]
     });
   }
 
-  // Validate filter-based nodes (IF v2.2+, Switch v3.2+) have complete metadata
+  // Validate If/Switch condition structures (version-conditional)
   if (workflow.nodes) {
     workflow.nodes.forEach((node, index) => {
-      const filterErrors = validateFilterBasedNodeMetadata(node);
+      const filterErrors = validateConditionNodeStructure(node);
       if (filterErrors.length > 0) {
         errors.push(...filterErrors.map(err => `Node "${node.name}" (index ${index}): ${err}`));
       }
@@ -488,104 +497,50 @@ export function hasWebhookTrigger(workflow: Workflow): boolean {
 }
 
 /**
- * Validate filter-based node metadata (IF v2.2+, Switch v3.2+)
- * Returns array of error messages
+ * Validate If/Switch node conditions structure for ANY version.
+ * Version-conditional: validates the correct structure per version.
  */
-export function validateFilterBasedNodeMetadata(node: WorkflowNode): string[] {
+export function validateConditionNodeStructure(node: WorkflowNode): string[] {
   const errors: string[] = [];
+  const typeVersion = node.typeVersion || 1;
 
-  // Check if node is filter-based
-  const isIFNode = node.type === 'n8n-nodes-base.if' && node.typeVersion >= 2.2;
-  const isSwitchNode = node.type === 'n8n-nodes-base.switch' && node.typeVersion >= 3.2;
-
-  if (!isIFNode && !isSwitchNode) {
-    return errors; // Not a filter-based node
-  }
-
-  // Validate IF node
-  if (isIFNode) {
-    const conditions = (node.parameters.conditions as any);
-
-    // Check conditions.options exists
-    if (!conditions?.options) {
-      errors.push(
-        'Missing required "conditions.options". ' +
-        'IF v2.2+ requires: {version: 2, leftValue: "", caseSensitive: true, typeValidation: "strict"}'
-      );
-    } else {
-      // Validate required fields
-      const requiredFields = {
-        version: 2,
-        leftValue: '',
-        caseSensitive: 'boolean',
-        typeValidation: 'strict'
-      };
-
-      for (const [field, expectedValue] of Object.entries(requiredFields)) {
-        if (!(field in conditions.options)) {
-          errors.push(
-            `Missing required field "conditions.options.${field}". ` +
-            `Expected value: ${typeof expectedValue === 'string' ? `"${expectedValue}"` : expectedValue}`
-          );
-        }
+  // conditions.options and all its sub-fields (version, leftValue,
+  // caseSensitive, typeValidation) are optional in n8n — the runtime applies
+  // defaults — so only the operator structure is validated here.
+  if (node.type === 'n8n-nodes-base.if') {
+    if (typeVersion >= 2) {
+      errors.push(...validateFilterConditionOperators(node.parameters?.conditions, 'conditions'));
+    }
+  } else if (node.type === 'n8n-nodes-base.switch') {
+    if (typeVersion >= 3.2) {
+      const rules = node.parameters?.rules as any;
+      if (rules?.rules && Array.isArray(rules.rules)) {
+        rules.rules.forEach((rule: any, i: number) => {
+          errors.push(...validateFilterConditionOperators(rule.conditions, `rules.rules[${i}].conditions`));
+        });
       }
-    }
-
-    // Validate operators in conditions
-    if (conditions?.conditions && Array.isArray(conditions.conditions)) {
-      conditions.conditions.forEach((condition: any, i: number) => {
-        const operatorErrors = validateOperatorStructure(condition.operator, `conditions.conditions[${i}].operator`);
-        errors.push(...operatorErrors);
-      });
-    }
-  }
-
-  // Validate Switch node
-  if (isSwitchNode) {
-    const rules = (node.parameters.rules as any);
-
-    if (rules?.rules && Array.isArray(rules.rules)) {
-      rules.rules.forEach((rule: any, ruleIndex: number) => {
-        // Check rule.conditions.options
-        if (!rule.conditions?.options) {
-          errors.push(
-            `Missing required "rules.rules[${ruleIndex}].conditions.options". ` +
-            'Switch v3.2+ requires: {version: 2, leftValue: "", caseSensitive: true, typeValidation: "strict"}'
-          );
-        } else {
-          // Validate required fields
-          const requiredFields = {
-            version: 2,
-            leftValue: '',
-            caseSensitive: 'boolean',
-            typeValidation: 'strict'
-          };
-
-          for (const [field, expectedValue] of Object.entries(requiredFields)) {
-            if (!(field in rule.conditions.options)) {
-              errors.push(
-                `Missing required field "rules.rules[${ruleIndex}].conditions.options.${field}". ` +
-                `Expected value: ${typeof expectedValue === 'string' ? `"${expectedValue}"` : expectedValue}`
-              );
-            }
-          }
-        }
-
-        // Validate operators in rule conditions
-        if (rule.conditions?.conditions && Array.isArray(rule.conditions.conditions)) {
-          rule.conditions.conditions.forEach((condition: any, condIndex: number) => {
-            const operatorErrors = validateOperatorStructure(
-              condition.operator,
-              `rules.rules[${ruleIndex}].conditions.conditions[${condIndex}].operator`
-            );
-            errors.push(...operatorErrors);
-          });
-        }
-      });
     }
   }
 
   return errors;
+}
+
+function validateFilterConditionOperators(conditions: any, path: string): string[] {
+  const errors: string[] = [];
+  if (!conditions?.conditions || !Array.isArray(conditions.conditions)) return errors;
+
+  conditions.conditions.forEach((condition: any, i: number) => {
+    errors.push(...validateOperatorStructure(
+      condition.operator,
+      `${path}.conditions[${i}].operator`
+    ));
+  });
+  return errors;
+}
+
+/** @deprecated Use validateConditionNodeStructure instead */
+export function validateFilterBasedNodeMetadata(node: WorkflowNode): string[] {
+  return validateConditionNodeStructure(node);
 }
 
 /**
@@ -621,33 +576,13 @@ export function validateOperatorStructure(operator: any, path: string): string[]
   if (!operator.operation) {
     errors.push(
       `${path}: missing required field "operation". ` +
-      'Operation specifies the comparison type (e.g., "equals", "contains", "isNotEmpty")'
+      'Operation specifies the comparison type (e.g., "equals", "contains", "notEmpty")'
     );
   }
 
-  // Check singleValue based on operator type
-  if (operator.operation) {
-    const unaryOperators = ['isEmpty', 'isNotEmpty', 'true', 'false', 'isNumeric'];
-    const isUnary = unaryOperators.includes(operator.operation);
-
-    if (isUnary) {
-      // Unary operators MUST have singleValue: true
-      if (operator.singleValue !== true) {
-        errors.push(
-          `${path}: unary operator "${operator.operation}" requires "singleValue: true". ` +
-          'Unary operators do not use rightValue.'
-        );
-      }
-    } else {
-      // Binary operators should NOT have singleValue: true
-      if (operator.singleValue === true) {
-        errors.push(
-          `${path}: binary operator "${operator.operation}" should not have "singleValue: true". ` +
-          'Only unary operators (isEmpty, isNotEmpty, true, false, isNumeric) need this property.'
-        );
-      }
-    }
-  }
+  // "singleValue" is deliberately not validated: n8n derives unary-ness from
+  // the operation name and ignores the flag at runtime (it is UI metadata that
+  // the write-path sanitizer normalizes on save).
 
   return errors;
 }

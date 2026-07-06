@@ -702,4 +702,370 @@ describe('WorkflowValidator - Loop Node Validation', () => {
       expect(result).toBeDefined();
     });
   });
+
+  // ─── Loop Output Edge Cases (absorbed from loop-output-edge-cases) ──
+
+  describe('Nodes without outputs', () => {
+    it('should handle nodes with null outputs gracefully', async () => {
+      mockNodeRepository.getNode.mockReturnValue({
+        nodeType: 'nodes-base.httpRequest', outputs: null, outputNames: null, properties: [],
+      });
+
+      const workflow = {
+        name: 'No Outputs',
+        nodes: [
+          { id: '1', name: 'HTTP Request', type: 'n8n-nodes-base.httpRequest', position: [100, 100], parameters: { url: 'https://example.com' } },
+          { id: '2', name: 'Set', type: 'n8n-nodes-base.set', position: [300, 100], parameters: {} },
+        ],
+        connections: { 'HTTP Request': { main: [[{ node: 'Set', type: 'main', index: 0 }]] } },
+      };
+
+      const result = await validator.validateWorkflow(workflow as any);
+      expect(result).toBeDefined();
+      const outputErrors = result.errors.filter(e => e.message?.includes('output') && !e.message?.includes('Connection'));
+      expect(outputErrors).toHaveLength(0);
+    });
+
+    it('should handle nodes with empty outputs array', async () => {
+      mockNodeRepository.getNode.mockReturnValue({
+        nodeType: 'nodes-base.customNode', outputs: [], outputNames: [], properties: [],
+      });
+
+      const workflow = {
+        name: 'Empty Outputs',
+        nodes: [{ id: '1', name: 'Custom Node', type: 'n8n-nodes-base.customNode', position: [100, 100], parameters: {} }],
+        connections: { 'Custom Node': { main: [[{ node: 'Custom Node', type: 'main', index: 0 }]] } },
+      };
+
+      const result = await validator.validateWorkflow(workflow as any);
+      const selfRefWarnings = result.warnings.filter(w => w.message?.includes('self-referencing'));
+      expect(selfRefWarnings).toHaveLength(1);
+    });
+  });
+
+  describe('Invalid connection indices', () => {
+    it('should handle very large connection indices', async () => {
+      mockNodeRepository.getNode.mockReturnValue({
+        nodeType: 'nodes-base.switch', outputs: [{ displayName: 'Output 1' }, { displayName: 'Output 2' }], properties: [],
+      });
+
+      const workflow = {
+        name: 'Large Index',
+        nodes: [
+          { id: '1', name: 'Switch', type: 'n8n-nodes-base.switch', position: [100, 100], parameters: {} },
+          { id: '2', name: 'Set', type: 'n8n-nodes-base.set', position: [300, 100], parameters: {} },
+        ],
+        connections: { 'Switch': { main: [[{ node: 'Set', type: 'main', index: 999 }]] } },
+      };
+
+      const result = await validator.validateWorkflow(workflow as any);
+      expect(result).toBeDefined();
+    });
+  });
+
+  describe('Malformed connection structures', () => {
+    it('should handle null connection objects', async () => {
+      const workflow = {
+        name: 'Null Connections',
+        nodes: [{ id: '1', name: 'Split In Batches', type: 'n8n-nodes-base.splitInBatches', position: [100, 100], parameters: {} }],
+        connections: { 'Split In Batches': { main: [null, [{ node: 'NonExistent', type: 'main', index: 0 }]] as any } },
+      };
+
+      const result = await validator.validateWorkflow(workflow as any);
+      expect(result).toBeDefined();
+    });
+
+    it('should handle missing connection properties', async () => {
+      const workflow = {
+        name: 'Malformed Connections',
+        nodes: [
+          { id: '1', name: 'Split In Batches', type: 'n8n-nodes-base.splitInBatches', position: [100, 100], parameters: {} },
+          { id: '2', name: 'Set', type: 'n8n-nodes-base.set', position: [300, 100], parameters: {} },
+        ],
+        connections: {
+          'Split In Batches': { main: [[{ node: 'Set' } as any, { type: 'main', index: 0 } as any, {} as any]] },
+        },
+      };
+
+      const result = await validator.validateWorkflow(workflow as any);
+      expect(result).toBeDefined();
+      expect(result.errors.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Complex output structures', () => {
+    it('should handle nodes with many outputs', async () => {
+      const manyOutputs = Array.from({ length: 20 }, (_, i) => ({
+        displayName: `Output ${i + 1}`, name: `output${i + 1}`,
+      }));
+
+      mockNodeRepository.getNode.mockReturnValue({
+        nodeType: 'nodes-base.complexSwitch', outputs: manyOutputs, outputNames: manyOutputs.map(o => o.name), properties: [],
+      });
+
+      const workflow = {
+        name: 'Many Outputs',
+        nodes: [
+          { id: '1', name: 'Complex Switch', type: 'n8n-nodes-base.complexSwitch', position: [100, 100], parameters: {} },
+          { id: '2', name: 'Set', type: 'n8n-nodes-base.set', position: [300, 100], parameters: {} },
+        ],
+        connections: { 'Complex Switch': { main: Array.from({ length: 20 }, () => [{ node: 'Set', type: 'main', index: 0 }]) } },
+      };
+
+      const result = await validator.validateWorkflow(workflow as any);
+      expect(result).toBeDefined();
+    });
+
+    it('should handle mixed output types (main, error, ai_tool)', async () => {
+      mockNodeRepository.getNode.mockReturnValue({
+        nodeType: 'nodes-base.complexNode', outputs: [{ displayName: 'Main', type: 'main' }, { displayName: 'Error', type: 'error' }], properties: [],
+      });
+
+      const workflow = {
+        name: 'Mixed Output Types',
+        nodes: [
+          { id: '1', name: 'Complex Node', type: 'n8n-nodes-base.complexNode', position: [100, 100], parameters: {} },
+          { id: '2', name: 'Main Handler', type: 'n8n-nodes-base.set', position: [300, 50], parameters: {} },
+          { id: '3', name: 'Error Handler', type: 'n8n-nodes-base.set', position: [300, 150], parameters: {} },
+          { id: '4', name: 'Tool', type: 'n8n-nodes-base.httpRequest', position: [500, 100], parameters: {} },
+        ],
+        connections: {
+          'Complex Node': {
+            main: [[{ node: 'Main Handler', type: 'main', index: 0 }]],
+            error: [[{ node: 'Error Handler', type: 'main', index: 0 }]],
+            ai_tool: [[{ node: 'Tool', type: 'main', index: 0 }]],
+          },
+        },
+      };
+
+      const result = await validator.validateWorkflow(workflow as any);
+      expect(result).toBeDefined();
+      expect(result.statistics.validConnections).toBe(3);
+    });
+  });
+
+  describe('SplitInBatches specific edge cases', () => {
+    it('should handle SplitInBatches with no connections', async () => {
+      const workflow = {
+        name: 'Isolated SplitInBatches',
+        nodes: [{ id: '1', name: 'Split In Batches', type: 'n8n-nodes-base.splitInBatches', position: [100, 100], parameters: {} }],
+        connections: {},
+      };
+
+      const result = await validator.validateWorkflow(workflow as any);
+      const splitWarnings = result.warnings.filter(w => w.message?.includes('SplitInBatches') || w.message?.includes('loop') || w.message?.includes('done'));
+      expect(splitWarnings).toHaveLength(0);
+    });
+
+    it('should handle SplitInBatches with only done output connected', async () => {
+      const workflow = {
+        name: 'Single Output SplitInBatches',
+        nodes: [
+          { id: '1', name: 'Split In Batches', type: 'n8n-nodes-base.splitInBatches', position: [100, 100], parameters: {} },
+          { id: '2', name: 'Final Action', type: 'n8n-nodes-base.emailSend', position: [300, 100], parameters: {} },
+        ],
+        connections: { 'Split In Batches': { main: [[{ node: 'Final Action', type: 'main', index: 0 }], []] } },
+      };
+
+      const result = await validator.validateWorkflow(workflow as any);
+      const loopWarnings = result.warnings.filter(w => w.message?.includes('loop') && w.message?.includes('connect back'));
+      expect(loopWarnings).toHaveLength(0);
+    });
+
+    it('should handle SplitInBatches with both outputs to same node', async () => {
+      const workflow = {
+        name: 'Same Target SplitInBatches',
+        nodes: [
+          { id: '1', name: 'Split In Batches', type: 'n8n-nodes-base.splitInBatches', position: [100, 100], parameters: {} },
+          { id: '2', name: 'Multi Purpose', type: 'n8n-nodes-base.set', position: [300, 100], parameters: {} },
+        ],
+        connections: {
+          'Split In Batches': { main: [[{ node: 'Multi Purpose', type: 'main', index: 0 }], [{ node: 'Multi Purpose', type: 'main', index: 0 }]] },
+          'Multi Purpose': { main: [[{ node: 'Split In Batches', type: 'main', index: 0 }]] },
+        },
+      };
+
+      const result = await validator.validateWorkflow(workflow as any);
+      const loopWarnings = result.warnings.filter(w => w.message?.includes('loop') && w.message?.includes('connect back'));
+      expect(loopWarnings).toHaveLength(0);
+    });
+
+    it('should detect reversed outputs with processing node on done output', async () => {
+      const workflow = {
+        name: 'Reversed SplitInBatches with Function Node',
+        nodes: [
+          { id: '1', name: 'Split In Batches', type: 'n8n-nodes-base.splitInBatches', position: [100, 100], parameters: {} },
+          { id: '2', name: 'Process Function', type: 'n8n-nodes-base.function', position: [300, 100], parameters: {} },
+        ],
+        connections: {
+          'Split In Batches': { main: [[{ node: 'Process Function', type: 'main', index: 0 }], []] },
+          'Process Function': { main: [[{ node: 'Split In Batches', type: 'main', index: 0 }]] },
+        },
+      };
+
+      const result = await validator.validateWorkflow(workflow as any);
+      const reversedErrors = result.errors.filter(e => e.message?.includes('SplitInBatches outputs appear reversed'));
+      expect(reversedErrors).toHaveLength(1);
+    });
+
+    it('should handle self-referencing nodes in loop back detection', async () => {
+      const workflow = {
+        name: 'Self Reference in Loop Back',
+        nodes: [
+          { id: '1', name: 'Split In Batches', type: 'n8n-nodes-base.splitInBatches', position: [100, 100], parameters: {} },
+          { id: '2', name: 'SelfRef', type: 'n8n-nodes-base.set', position: [300, 100], parameters: {} },
+        ],
+        connections: {
+          'Split In Batches': { main: [[], [{ node: 'SelfRef', type: 'main', index: 0 }]] },
+          'SelfRef': { main: [[{ node: 'SelfRef', type: 'main', index: 0 }]] },
+        },
+      };
+
+      const result = await validator.validateWorkflow(workflow as any);
+      expect(result.warnings.filter(w => w.message?.includes("doesn't connect back"))).toHaveLength(1);
+      expect(result.warnings.filter(w => w.message?.includes('self-referencing'))).toHaveLength(1);
+    });
+
+    it('should handle many SplitInBatches nodes', async () => {
+      const nodes = Array.from({ length: 100 }, (_, i) => ({
+        id: `split${i}`, name: `Split ${i}`, type: 'n8n-nodes-base.splitInBatches',
+        position: [100 + (i % 10) * 100, 100 + Math.floor(i / 10) * 100], parameters: {},
+      }));
+
+      const connections: any = {};
+      for (let i = 0; i < 99; i++) {
+        connections[`Split ${i}`] = { main: [[{ node: `Split ${i + 1}`, type: 'main', index: 0 }], []] };
+      }
+
+      const result = await validator.validateWorkflow({ name: 'Many SplitInBatches', nodes, connections } as any);
+      expect(result).toBeDefined();
+      expect(result.statistics.totalNodes).toBe(100);
+    });
+  });
+
+  describe('Controlled loops with conditional nodes', () => {
+    it('should not flag pagination loop through IF node', async () => {
+      mockNodeRepository.getNode.mockReturnValue({
+        nodeType: 'nodes-base.httpRequest',
+        properties: []
+      });
+
+      const workflow = {
+        name: 'Pagination Loop',
+        nodes: [
+          { id: '1', name: 'Manual Trigger', type: 'n8n-nodes-base.manualTrigger', position: [0, 0], parameters: {} },
+          { id: '2', name: 'HTTP Request', type: 'n8n-nodes-base.httpRequest', position: [200, 0], parameters: {} },
+          { id: '3', name: 'IF Done', type: 'n8n-nodes-base.if', position: [400, 0], parameters: {} },
+          { id: '4', name: 'Wait', type: 'n8n-nodes-base.wait', position: [400, 200], parameters: {} },
+          { id: '5', name: 'Output', type: 'n8n-nodes-base.set', position: [600, 0], parameters: {} },
+        ],
+        connections: {
+          'Manual Trigger': { main: [[{ node: 'HTTP Request', type: 'main', index: 0 }]] },
+          'HTTP Request': { main: [[{ node: 'IF Done', type: 'main', index: 0 }]] },
+          'IF Done': {
+            main: [
+              [{ node: 'Output', type: 'main', index: 0 }],       // true → exit
+              [{ node: 'Wait', type: 'main', index: 0 }]          // false → continue loop
+            ]
+          },
+          'Wait': { main: [[{ node: 'HTTP Request', type: 'main', index: 0 }]] }  // back to HTTP
+        }
+      };
+
+      const result = await validator.validateWorkflow(workflow as any);
+
+      const cycleErrors = result.errors.filter(e => e.message?.includes('cycle'));
+      expect(cycleErrors).toHaveLength(0);
+    });
+
+    it('should not flag loop through Switch node', async () => {
+      mockNodeRepository.getNode.mockReturnValue({
+        nodeType: 'nodes-base.httpRequest',
+        properties: []
+      });
+
+      const workflow = {
+        name: 'Switch Loop',
+        nodes: [
+          { id: '1', name: 'Manual Trigger', type: 'n8n-nodes-base.manualTrigger', position: [0, 0], parameters: {} },
+          { id: '2', name: 'Fetch', type: 'n8n-nodes-base.httpRequest', position: [200, 0], parameters: {} },
+          { id: '3', name: 'Check Status', type: 'n8n-nodes-base.switch', position: [400, 0], parameters: {} },
+          { id: '4', name: 'Done', type: 'n8n-nodes-base.set', position: [600, 0], parameters: {} },
+        ],
+        connections: {
+          'Manual Trigger': { main: [[{ node: 'Fetch', type: 'main', index: 0 }]] },
+          'Fetch': { main: [[{ node: 'Check Status', type: 'main', index: 0 }]] },
+          'Check Status': {
+            main: [
+              [{ node: 'Done', type: 'main', index: 0 }],    // output 0: done
+              [{ node: 'Fetch', type: 'main', index: 0 }]     // output 1: retry
+            ]
+          }
+        }
+      };
+
+      const result = await validator.validateWorkflow(workflow as any);
+
+      const cycleErrors = result.errors.filter(e => e.message?.includes('cycle'));
+      expect(cycleErrors).toHaveLength(0);
+    });
+
+    it('should not flag loop through Filter node', async () => {
+      mockNodeRepository.getNode.mockReturnValue({
+        nodeType: 'nodes-base.httpRequest',
+        properties: []
+      });
+
+      const workflow = {
+        name: 'Filter Loop',
+        nodes: [
+          { id: '1', name: 'Manual Trigger', type: 'n8n-nodes-base.manualTrigger', position: [0, 0], parameters: {} },
+          { id: '2', name: 'Process', type: 'n8n-nodes-base.set', position: [200, 0], parameters: {} },
+          { id: '3', name: 'Filter', type: 'n8n-nodes-base.filter', position: [400, 0], parameters: {} },
+        ],
+        connections: {
+          'Manual Trigger': { main: [[{ node: 'Process', type: 'main', index: 0 }]] },
+          'Process': { main: [[{ node: 'Filter', type: 'main', index: 0 }]] },
+          'Filter': { main: [[{ node: 'Process', type: 'main', index: 0 }]] }  // loop back
+        }
+      };
+
+      const result = await validator.validateWorkflow(workflow as any);
+
+      const cycleErrors = result.errors.filter(e => e.message?.includes('cycle'));
+      expect(cycleErrors).toHaveLength(0);
+    });
+
+    it('should still flag pure cycle without conditional or loop nodes (as a warning)', async () => {
+      mockNodeRepository.getNode.mockReturnValue({
+        nodeType: 'nodes-base.set',
+        properties: []
+      });
+
+      const workflow = {
+        name: 'Pure Cycle',
+        nodes: [
+          { id: '1', name: 'Manual Trigger', type: 'n8n-nodes-base.manualTrigger', position: [0, 0], parameters: {} },
+          { id: '2', name: 'Node1', type: 'n8n-nodes-base.set', position: [200, 0], parameters: {} },
+          { id: '3', name: 'Node2', type: 'n8n-nodes-base.httpRequest', position: [400, 0], parameters: {} },
+          { id: '4', name: 'Node3', type: 'n8n-nodes-base.code', position: [600, 0], parameters: {} },
+        ],
+        connections: {
+          'Manual Trigger': { main: [[{ node: 'Node1', type: 'main', index: 0 }]] },
+          'Node1': { main: [[{ node: 'Node2', type: 'main', index: 0 }]] },
+          'Node2': { main: [[{ node: 'Node3', type: 'main', index: 0 }]] },
+          'Node3': { main: [[{ node: 'Node1', type: 'main', index: 0 }]] }  // back to Node1 — no IF/Loop
+        }
+      };
+
+      const result = await validator.validateWorkflow(workflow as any);
+
+      // Demoted to warning: n8n does not statically reject cycles, and static
+      // analysis cannot prove non-termination.
+      const cycleErrors = result.errors.filter(e => e.message?.includes('cycle'));
+      expect(cycleErrors).toHaveLength(0);
+      const cycleWarnings = result.warnings.filter(w => w.message?.includes('cycle'));
+      expect(cycleWarnings).toHaveLength(1);
+    });
+  });
 });
